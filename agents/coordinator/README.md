@@ -7,7 +7,7 @@ Upload a 30-second video or a few photos of a home. Last Mile Home turns it into
 
 - **Elder safety:** finds fall hazards, checks walker clearance, and walks the night path to the bathroom.
 - **Baby-proofing:** finds hazards at toddler eye level, such as outlets, sharp corners, cords and stairs.
-- **Interior design:** suggests a new layout and real products that fit the measured space.
+- **Space transformer:** repurposes a room for a new use, such as turning a spare bedroom into a home office. It plans the new layout and finds real products online that fit the measured space.
 - **Insurance claim:** lists and values every item, with evidence, and builds a claim package.
 
 ## Usage

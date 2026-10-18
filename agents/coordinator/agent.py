@@ -27,7 +27,7 @@ coordinator = Agent(
     readme_path=str(Path(__file__).with_name("README.md")),
     description=(
         "Last Mile Home: upload a short video or photos of a home and get a 3D model "
-        "plus elder-safety, baby-proofing, interior-design and insurance-claim help."
+        "plus elder-safety, baby-proofing, space-transformation and insurance-claim help."
     ),
 )
 

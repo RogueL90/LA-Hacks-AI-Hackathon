@@ -9,7 +9,7 @@ Upload a 30-second video or a few photos of a home in **ASI:One**. Last Mile Hom
 |---|---|
 | Elder safety | Fall hazards, walker clearance, the 2 am walk to the bathroom |
 | Baby-proofing | Hazards at toddler eye level: outlets, corners, cords, stairs, reachable items |
-| Interior design | A new layout and style, with real products that fit the measured space |
+| Space transformer | Repurposes a room (for example, a bedroom into a home office): new layout, what stays or moves, and real products found online that fit the measured space |
 | Insurance claim | Lists and values every object with evidence, and builds the claim package |
 
 Built for LA Hacks AI 2026 (Fetch.ai track) with Fetch.ai uAgents, Agentverse, ASI:One, Anthropic Claude and Sentry.
@@ -30,7 +30,7 @@ space_service/     FastAPI: build, store, overlays, snapshots
 viewer/            React + three.js 3D viewer
 agents/coordinator/
 agents/space_builder/
-agents/specialists/{elder,baby,interior,claim}/
+agents/specialists/{elder,baby,transformer,claim}/
 agents/actions/{product_finder,cart,payment_verifier,insurance_filer}/
 agents/recovery/
 run/bureau.py      runs all agents in one process
