@@ -37,6 +37,17 @@ app.add_middleware(
 )
 app.mount("/files/media", StaticFiles(directory=storage.MEDIA_DIR), name="media")
 
+
+@app.middleware("http")
+async def public_is_read_only(request, call_next):
+    """Through the public tunnel (Cloudflare adds cf-connecting-ip) the service only serves reads:
+    homes, findings and media. Builds, uploads and debug calls come from our agents on this machine."""
+    if "cf-connecting-ip" in request.headers and request.method not in ("GET", "HEAD", "OPTIONS"):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse({"detail": "read-only from the public address"}, status_code=403)
+    return await call_next(request)
+
 # The prebuilt demo space is always available (stage fallback).
 storage.save_space(load_prebuilt(DEMO_SPACE_ID))
 

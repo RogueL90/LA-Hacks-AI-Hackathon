@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Canvas } from "@react-three/fiber";
-import { fetchLatestOverlay, fetchOverlaySet, fetchSpace } from "../lib/api";
+import { SPACE_SERVICE_URL, fetchLatestOverlay, fetchOverlaySet, fetchSpace } from "../lib/api";
 import { objectSize } from "../lib/defaults";
 import type { OverlaySet, Space } from "../lib/types";
 import { Dollhouse, spaceBounds } from "../scene/Dollhouse";
@@ -42,6 +42,9 @@ function WalkButton({ cmd, label, glyph, input }: { cmd: WalkCmd; label: string;
     </button>
   );
 }
+
+/** Frames saved as the service's local address still load when the viewer is opened from outside. */
+const servedFrom = (url: string) => url.replace(/^https?:\/\/(127\.0\.0\.1|localhost):8300/, SPACE_SERVICE_URL);
 
 const LEVEL_NAMES: Record<number, string> = { [-1]: "Basement", 0: "Main floor", 1: "Upper floor" };
 const levelName = (level: number) => LEVEL_NAMES[level] ?? `Floor ${level + 1}`;
@@ -296,7 +299,10 @@ export function SpaceView() {
             </section>
           ))}
           {(findingsFor(selected.id)[0]?.frame_url ?? selected.evidence?.[0]?.frame_url) && (
-            <img src={findingsFor(selected.id)[0]?.frame_url ?? selected.evidence?.[0]?.frame_url} alt="Where it was seen in your video" />
+            <img
+              src={servedFrom(findingsFor(selected.id)[0]?.frame_url ?? selected.evidence?.[0]?.frame_url)}
+              alt="Where it was seen in your video"
+            />
           )}
         </aside>
       )}
