@@ -1,0 +1,7 @@
+uagents==0.26.1
+uagents-core==0.4.12
+openai==3.35.1
+anthropic==1.15.0
+httpx==0.28.1
+python-dotenv==1.2.4
+certifi==2026.7.22
