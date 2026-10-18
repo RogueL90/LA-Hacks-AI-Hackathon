@@ -384,3 +384,32 @@ def test_a_reworded_person_label_is_still_a_repeat():
                 "night_trips": "true", "budget_usd": "300"}
     assert coord.repeats_answers(state, restated)
     assert not coord.repeats_answers(state, {**restated, "budget_usd": "500"})  # a real change still counts
+
+
+def test_the_live_restated_intake_with_a_new_person_label_goes_to_the_cart():
+    """The exact live turn (08:00): elder results shown, then the planner restated every answer with
+    person "elder" instead of "man" and asked for fixes "so I can find products for each fix"."""
+    went = []
+
+    async def fake_shop(ctx, sender, state):
+        went.append("shop")
+
+    async def fake_intake(ctx, sender, state, selection, intro=""):
+        went.append("intake")
+
+    state = {"job_id": "j", "space_id": "s", "result": {"mode": "elder", "findings": []},
+             "answers": {"person": "man", "age": "84", "budget_usd": "300", "mobility_aid": "walker",
+                         "night_trips": "true"}}
+    selection = {"action": "submit_intake", "mode": "elder", "age": "84", "budget_usd": "300",
+                 "mobility_aid": "walker", "night_trips": "true", "person": "elder",
+                 "requirements": "full fall-hazard analysis and prioritized list of budget-friendly fixes"}
+    text = ("Hi, following up on our earlier conversation: the resident is an 84-year-old man who uses a walker "
+            "and walks to the bathroom at night. Include walker clearance, night-path lighting, rugs and grab bars "
+            "so I can find products for each fix.")
+    orig = coord.shop, coord.on_intake
+    coord.shop, coord.on_intake = fake_shop, fake_intake
+    try:
+        run(coord.route(FakeCtx(), USER, state, [], selection, text))
+    finally:
+        coord.shop, coord.on_intake = orig
+    assert went == ["shop"]
