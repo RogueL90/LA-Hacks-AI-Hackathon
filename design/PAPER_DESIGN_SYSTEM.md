@@ -5,9 +5,10 @@ Paper file: **Last Mile Home — Design System** — https://app.paper.design/fi
 | Page | Status |
 |---|---|
 | Foundations | done — 53 tokens + board (accents, neutrals, status, severity, type, spacing, radius) |
-| Viewer UI | done — top bar, mode chips, pin / object / tag / ghost labels, side card, walker path |
-| 3D Style | todo (§2) |
-| ASI:One Cards | todo (§4) |
+| Viewer UI | done — top bar, mode chips, floor switcher, pin / object / tag / ghost labels, side card, walker path |
+| Data Model | done — Space / Room / Door / SpaceObject (new: level, floor_material, Door.kind), 96-type catalog, attributes + which mode reads them |
+| 3D Style | done — floor materials (real textures), door kinds, floors, object states, placement rules, material palette (§2) |
+| ASI:One Cards | done — space ready, hazard carousel, fix plan, paid + handoff, claim package, recovery notice (§4) |
 
 Rule of thumb: **Paper owns how things look. Code owns what data they get.**
 JSON schemas stay in `shared/models.py`, `space_service/schemas.py`, `viewer/src/lib/types.ts`.
@@ -31,10 +32,10 @@ Paper tokens are exported (`get_tokens` → CSS) into `viewer/src/styles.css` an
 | Item | What Paper holds |
 |---|---|
 | Room shell | floor colour, wall colour, wall cut-away height, wall thickness |
-| Material palette | wood, fabric, ceramic, metal, glass, plant swatches; rule for softening Gemini's real colour toward the warm neutral |
+| Material palette | wood, fabric, ceramic, metal, glass, plant swatches; rule for softening the extracted real colour toward the warm neutral |
 | Object states | default · hovered · selected · hazard (pulse in accent) · ghost fix (≈40% opacity) · reachable-by-toddler glow · claim "ash" state |
 | Lighting moods | day (hero), elder night, baby, interior, claim — reference screenshot + light values |
-| Object icons | one 2D icon per catalog type (35) for cards, legends, claim inventory |
+| Object icons | one 2D icon per catalog type (96, see Data Model page) — still todo for cards, legends, claim inventory |
 
 Stays in code: glTF models (`viewer/public/models/`), type → model/default-size catalog (`lib/defaults.ts`).
 
