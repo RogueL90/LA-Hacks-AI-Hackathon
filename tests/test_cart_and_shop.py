@@ -234,7 +234,7 @@ def test_the_cart_is_checked_out_as_an_itemized_demo_order(fake_stripe):
     state = plan_state()
     run(coord.shop(ctx, USER, state))
     lines = fake_stripe["last_items"]
-    assert [l["name"] for l in lines] == ["Product elder_grab_1", "Product elder_rug_1", "Last Mile Home service fee"]
+    assert [l["name"] for l in lines] == ["Product elder_grab_1", "Product elder_rug_1", "Maestro service fee"]
     assert fake_stripe["last_amount"] == "41.00"  # $20 + $20 products + $1 fee
     request = next(m for _, m in ctx.sent if type(m).__name__ == "RequestPayment")
     assert request.accepted_funds[0].amount == "41.00"

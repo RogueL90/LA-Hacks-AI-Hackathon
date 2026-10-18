@@ -26,7 +26,7 @@ agent = make_action_agent(
     "payment_verifier",
     "Stripe Payment Verifier",
     (
-        "Confirms a Last Mile Home service fee was paid through Stripe (test mode only): checks "
+        "Confirms a Maestro service fee was paid through Stripe (test mode only): checks "
         "the user's Checkout Session, or charges Stripe's test card. Never takes a real charge."
     ),
     Path(__file__).parent,

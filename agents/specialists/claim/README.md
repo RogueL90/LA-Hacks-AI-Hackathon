@@ -14,4 +14,4 @@ Turns a 3D model of a home into a contents inventory for an insurance claim.
 - In: `ModeRequest` (mode `claim`) with the policy type and ZIP code
 - Out: `ModeResult` with one item per object, ready for pricing and the claim package
 
-Part of Last Mile Home; reached through the Last Mile Home coordinator in ASI:One.
+Part of Maestro; reached through the Maestro coordinator in ASI:One.

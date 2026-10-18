@@ -82,7 +82,7 @@ def charge_test_fee(
         "confirm": True,
         "automatic_payment_methods": {"enabled": True, "allow_redirects": "never"},
         "description": (
-            "Last Mile Home service fee. Stripe test mode, not a real charge."
+            "Maestro service fee. Stripe test mode, not a real charge."
         ),
         "metadata": {"service_fee_usd": fee, "mode": "stripe_test"},
     }

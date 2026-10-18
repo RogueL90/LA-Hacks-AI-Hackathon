@@ -1,7 +1,7 @@
 """Live end-to-end suite through ASI:One itself (planner mode, the way the chat app relays users).
 
-Each scenario is a real conversation: typed messages go to ASI:One, its planner calls Last Mile
-Home, and every turn is checked against what ASI:One received (cards, payment requests, text),
+Each scenario is a real conversation: typed messages go to ASI:One, its planner calls Maestro,
+and every turn is checked against what ASI:One received (cards, payment requests, text),
 the coordinator's saved state, and Stripe (the itemized demo checkout).
 
 Paying a Stripe checkout needs a browser, so scenarios stop at the payment request; the paid ->
@@ -186,7 +186,7 @@ def run_scenario(name: str) -> dict:
         extra = ""
         if t.payment():
             lines = stripe_lines(json.dumps(t.payment()))  # the one checkout, from ASI:One's payment request
-            fee = [l for l in lines if l[0] == "Last Mile Home service fee"]
+            fee = [l for l in lines if l[0] == "Maestro service fee"]
             items_ok = bool(lines) and len(fee) == 1 and len(lines) >= 2
             total = round(sum(l[2] for l in lines), 2)
             asked = float(t.payment()["accepted_funds"][0]["amount"])

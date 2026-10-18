@@ -1,4 +1,4 @@
-"""Last Mile Home Space Builder: wraps Aditya's Space Service (video/photos -> 3D Space).
+"""Maestro Space Builder: wraps Aditya's Space Service (video/photos -> 3D Space).
 
 Falls back to the prebuilt demo home when the service is not configured or fails, and
 says so via scale_method="prebuilt" so the coordinator can label it.
@@ -20,7 +20,7 @@ agent = Agent(
     handle_messages_concurrently=True,  # one slow user must not block the others
     publish_agent_details=True,
     readme_path=str(Path(__file__).with_name("README.md")),
-    description="Last Mile Home Space Builder: turns a short home video or photos into a 3D model where every object has a real type, size and position.",
+    description="Maestro Space Builder: turns a short home video or photos into a 3D model where every object has a real type, size and position.",
 )
 protocol = Protocol(name="HomeSpaceBuild", version="0.1.0")
 

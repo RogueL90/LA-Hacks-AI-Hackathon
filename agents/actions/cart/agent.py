@@ -27,7 +27,7 @@ agent = make_action_agent(
     (
         "Builds a budget-aware cart from verified product quotes, most important fixes first, and "
         "sets the Stripe test-mode service fee. Store links are a handoff, not an order. Part of "
-        "Last Mile Home."
+        "Maestro."
     ),
     Path(__file__).parent,
     port=8012,

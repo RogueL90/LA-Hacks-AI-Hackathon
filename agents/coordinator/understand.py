@@ -18,7 +18,7 @@ MODES = ["elder", "baby", "transform", "claim"]
 
 _client = AsyncOpenAI(base_url="https://api.asi1.ai/v1", api_key=config.ASI_ONE_API_KEY, timeout=20)
 
-SYSTEM = """You read messages sent to Last Mile Home, a home-safety agent in ASI:One, and decide what the user wants.
+SYSTEM = """You read messages sent to Maestro, a home-safety agent in ASI:One, and decide what the user wants.
 The flow: the user shares a video of a home -> picks a mode (elder = elder safety/fall risks, baby = baby-proofing,
 transform = repurpose a room such as a home office, claim = insurance claim inventory) -> fills in a short form ->
 sees findings and a fix plan -> approves it -> sees a cart of products that fit -> pays a service fee -> confirms

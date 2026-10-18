@@ -11,9 +11,9 @@ Finds real products online and checks every one: the store page has to load and 
 - "Grab bars for a bathroom, one 18 in and two 24 in"
 - "A hardware-mounted baby gate for a 39 in wide stair"
 
-It splits the request into product searches, searches stores (Walmart, Target, Home Depot, Amazon, Wayfair and more), checks each page and price, and replies with a best pick and a backup per item, with links. For products that fit a measured room and one checkout for the whole cart, send a home video to **Last Mile Home**.
+It splits the request into product searches, searches stores (Walmart, Target, Home Depot, Amazon, Wayfair and more), checks each page and price, and replies with a best pick and a backup per item, with links. For products that fit a measured room and one checkout for the whole cart, send a home video to **Maestro**.
 
-## Inside Last Mile Home
+## Inside Maestro
 
 **In:** `FindProductsRequest`  
 **Out:** `FindProductsResult`

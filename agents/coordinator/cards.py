@@ -378,8 +378,8 @@ def receipt_card(amount: str, reference: str, cart: CartResult | None = None) ->
         children += [
             {"type": "heading", "value": "In your order", "level": 3},
             {"type": "list", "items": [_quote_row(q, link=False) for q in items[:10]]},
-            {"type": "text", "value": "Demo checkout: nothing is really charged or shipped. In a real deployment Last "
-                                      "Mile Home would place these orders with each store; the store pages are in the "
+            {"type": "text", "value": "Demo checkout: nothing is really charged or shipped. In a real deployment "
+                                      "Maestro would place these orders with each store; the store pages are in the "
                                       "message above.", "style": "muted"},
         ]
     children.append({"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}})

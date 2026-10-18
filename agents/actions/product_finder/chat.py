@@ -2,7 +2,7 @@
 each" -> real products with verified store pages, prices and links.
 
 Claude splits the request into product searches; the searches use the same verification and product
-pools as Last Mile Home's fix plans. Greetings and probes get a short help message without searching.
+pools as Maestro's fix plans. Greetings and probes get a short help message without searching.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ HELP = (
     "I'm the Home Product Finder. Tell me what you need and I'll search real stores, check each product page "
     "and price, and send you the links. For example: \"two 27 inch monitors under $150 each\", \"grab bars for a "
     "bathroom\" or \"a baby gate for a 39 in wide stair\". To get products that fit a measured room and check out "
-    "the whole cart, send a home video to Last Mile Home."
+    "the whole cart, send a home video to Maestro."
 )
 
 
@@ -85,7 +85,7 @@ def _reply(found, items: list[Item]) -> str:
             note = " Over your price limit." if "share of your budget" in (q.fit_note or "") else ""
             lines.append(f"- [{q.title[:70]}]({q.url}): ${q.price_usd:,.2f} at {q.merchant} ({role}).{note}")
     lines.append("\nWant these fitted to your room's measurements and checked out in one cart? Send a home video "
-                 "to Last Mile Home.")
+                 "to Maestro.")
     return "\n".join(lines)
 
 

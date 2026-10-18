@@ -30,7 +30,7 @@ agent = make_action_agent(
     (
         "Turns a home contents inventory into a ready-to-send insurance claim package: xlsx and "
         "csv inventory with replacement costs and evidence frames, plus a cover letter PDF. Part "
-        "of Last Mile Home."
+        "of Maestro."
     ),
     Path(__file__).parent,
     port=8014,

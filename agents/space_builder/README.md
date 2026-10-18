@@ -9,4 +9,4 @@ Turns a 30-second video or a few photos of a home into a 3D "dollhouse" model. E
 - In: `SpaceBuildRequest` with the public URLs of the video or photos
 - Out: `SpaceBuildResult` with the `Space`: rooms, doors, objects, scale method, a 3D viewer link and a snapshot image
 
-Part of Last Mile Home; reached through the Last Mile Home coordinator in ASI:One.
+Part of Maestro; reached through the Maestro coordinator in ASI:One.

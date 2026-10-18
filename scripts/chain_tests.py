@@ -1,7 +1,7 @@
 """Cross-process chain tests against the LIVE agents (run/start.sh must be running).
 
 Test users run in their own process with a local endpoint, so every message goes over the
-network: user -> Last Mile Home -> (Agentverse mailboxes) -> Space Builder / specialists ->
+network: user -> Maestro -> (Agentverse mailboxes) -> Space Builder / specialists ->
 back. Afterwards the live logs are checked to confirm which specialist handled each job and
 that no fallback path was used.
 

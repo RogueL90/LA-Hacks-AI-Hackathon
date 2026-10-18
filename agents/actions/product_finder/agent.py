@@ -28,7 +28,7 @@ agent = make_action_agent(
     (  # Agentverse allows 300 characters
         "Finds real products online and checks them: ask for \"two 27 inch monitors under $150\", "
         "\"grab bars for a bathroom\" or \"a baby gate for a 39 in stair\" and it searches stores, "
-        "verifies each product page and price, and replies with links. Part of Last Mile Home."
+        "verifies each product page and price, and replies with links. Part of Maestro."
     ),
     Path(__file__).parent,
     port=8011,

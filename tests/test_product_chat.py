@@ -36,7 +36,7 @@ def test_a_shopping_request_returns_checked_products_with_links(monkeypatch):
     assert "**27 inch IPS monitor** (×2)" in reply
     assert "[ASUS 27 inch IPS monitor](https://store/asus): $119.00 at Walmart (best pick)" in reply
     assert "**wireless keyboard and mouse combo**: no product page I could confirm" in reply
-    assert "Last Mile Home" in reply
+    assert "Maestro" in reply
 
 
 def test_without_claude_the_whole_message_is_one_search(monkeypatch):

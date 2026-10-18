@@ -14,4 +14,4 @@ Repurposes a room for a new use, such as turning a spare bedroom into a home off
 - In: `ModeRequest` (mode `transform`) with the goal, room, requirements, style and budget
 - Out: `ModeResult` with the layout suggestions and a sized product search for each new item
 
-Part of Last Mile Home; reached through the Last Mile Home coordinator in ASI:One.
+Part of Maestro; reached through the Maestro coordinator in ASI:One.

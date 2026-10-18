@@ -373,3 +373,14 @@ def test_a_reply_that_fails_to_deliver_is_sent_again(monkeypatch):
     ctx = FlakyCtx(*["Message delivery failed"] * 5)
     run(coord.send(ctx, USER, coord.text_message("Found 7 hazards.")))
     assert len(ctx.sent) == coord.SEND_ATTEMPTS
+
+
+def test_a_reworded_person_label_is_still_a_repeat():
+    """Live: "an 84-year-old man" came back as person="elder" with every other answer the same, and the
+    elder check ran again instead of shopping."""
+    state = {"result": {"mode": "elder"}, "answers": {"person": "man", "age": "84", "mobility_aid": "walker",
+                                                      "night_trips": "true", "budget_usd": "300"}}
+    restated = {"action": "submit_intake", "mode": "elder", "person": "elder", "age": "84", "mobility_aid": "walker",
+                "night_trips": "true", "budget_usd": "300"}
+    assert coord.repeats_answers(state, restated)
+    assert not coord.repeats_answers(state, {**restated, "budget_usd": "500"})  # a real change still counts

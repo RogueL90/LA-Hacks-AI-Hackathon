@@ -14,4 +14,4 @@ Finds hazards a toddler can reach in a 3D model of a home: anything below 0.9 m 
 - In: `ModeRequest` (mode `baby`) with the child's age and a budget
 - Out: `ModeResult` with hazards, fixes and a product search for each fix
 
-Part of Last Mile Home; reached through the Last Mile Home coordinator in ASI:One.
+Part of Maestro; reached through the Maestro coordinator in ASI:One.

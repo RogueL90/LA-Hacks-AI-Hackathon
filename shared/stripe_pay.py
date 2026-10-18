@@ -13,7 +13,7 @@ SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "").strip()
 FEE_USD = os.getenv("SERVICE_FEE_USD", "1.00")  # fallback only: the Cart agent sets each plan's fee
 RETURN_URL = os.getenv("STRIPE_SUCCESS_URL", "https://agentverse.ai/payment-success")
-PRODUCT = "Last Mile Home fix plan"
+PRODUCT = "Maestro fix plan"
 
 
 def enabled() -> bool:
@@ -56,7 +56,7 @@ def _create(reference: str, description: str, amount_usd: str, items: list[dict]
     """One embedded Checkout Session: ASI:One's Pay button opens it in the chat (Payment Protocol)."""
     client = _client()
     expires_at = int(time.time()) + 1800  # Stripe's minimum is 30 minutes
-    metadata = {"reference": reference, "service": "last_mile_home"}
+    metadata = {"reference": reference, "service": "maestro"}
     embedded = client.v1.checkout.sessions.create(params={
         "ui_mode": "embedded_page",  # Stripe renamed "embedded"; ASI:One metadata below keeps "embedded"
         "redirect_on_completion": "if_required",

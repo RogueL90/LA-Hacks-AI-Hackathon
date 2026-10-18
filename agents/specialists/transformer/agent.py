@@ -1,4 +1,4 @@
-"""Space Transformer (Last Mile Home specialist): ModeRequest in, ModeResult out."""
+"""Space Transformer (Maestro specialist): ModeRequest in, ModeResult out."""
 from pathlib import Path
 
 from agents.specialists.base import make_specialist
@@ -8,7 +8,7 @@ agent = make_specialist(
     key="transformer",
     name="Space Transformer",
     mode="transform",
-    description="Last Mile Home space transformer: plans how to repurpose a room (for example into a home office) from a 3D model, with products sized to fit the measured space.",
+    description="Maestro space transformer: plans how to repurpose a room (for example into a home office) from a 3D model, with products sized to fit the measured space.",
     analyze=analyze,
     folder=Path(__file__).parent,
 )

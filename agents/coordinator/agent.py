@@ -1,4 +1,4 @@
-"""Last Mile Home Coordinator: the only agent ASI:One talks to.
+"""Maestro Coordinator: the only agent ASI:One talks to.
 
 Flow: video/photos -> Space Builder -> mode cards -> intake form -> specialist ->
 findings + fix plan -> service fee via the Payment Protocol (Stripe, test mode).
@@ -76,13 +76,13 @@ MODE_AGENT = {"elder": "elder", "baby": "baby", "transform": "transformer", "cla
 LOCAL_ANALYZE = {"elder": elder_analyze, "baby": baby_analyze, "transform": transformer_analyze, "claim": claim_analyze}
 
 GREETING = (
-    "Hi, I'm Last Mile Home. Attach a 30-second video or a few photos of a home, and I'll map it in 3D. "
+    "Hi, I'm Maestro. Attach a 30-second video or a few photos of a home, and I'll map it in 3D. "
     "Then I can check it for elder safety or baby-proofing, plan a room makeover (for example a home office), "
     "or list everything for an insurance claim."
 )
 
 coordinator = Agent(
-    name="Last Mile Home",
+    name="Maestro",
     seed=config.seed("coordinator"),
     mailbox=True,
     handle_messages_concurrently=True,  # one slow user must not block the others
@@ -231,7 +231,9 @@ def repeats_answers(state: dict, selection: dict) -> bool:
     if not result or mode != result.get("mode"):
         return False
     known = state.get("answers", {})
-    given = {k: v for k, v in selection.items() if k in MODE_KEYS.get(mode, set())}
+    # "person" is a free-text label the planner rewords every time ("man", "elder", "dad"); the checks
+    # don't depend on it, so a new wording isn't a new answer.
+    given = {k: v for k, v in selection.items() if k in MODE_KEYS.get(mode, set()) and k != "person"}
     return all(str(known.get(k, "")).strip().lower() == str(v).strip().lower() for k, v in given.items())
 
 
@@ -764,7 +766,7 @@ async def request_fee(ctx: Context, sender: str, state: dict):
     total = format_service_fee_usd(round(cart.subtotal_usd + float(fee), 2))
     lines = [{"name": _short(q.title, 120), "unit_usd": q.price_usd, "quantity": _qty(q), "image": q.image_url,
               "description": f"From {q.merchant} (demo order: nothing is actually bought)"} for q in cart.items]
-    lines.append({"name": "Last Mile Home service fee", "unit_usd": float(fee), "quantity": 1,
+    lines.append({"name": "Maestro service fee", "unit_usd": float(fee), "quantity": 1,
                   "description": "Finding products that fit your measured home"})
     reference = state.get("job_id") or str(uuid4())
     t0 = time.monotonic()
@@ -782,10 +784,10 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         recipient=str(coordinator.address),
         deadline_seconds=1800,
         reference=reference,
-        description=f"Last Mile Home demo order: {len(cart.items)} products + ${fee} service fee = ${total}",
+        description=f"Maestro demo order: {len(cart.items)} products + ${fee} service fee = ${total}",
         metadata={
             "stripe": checkout["embedded"],
-            "service": "last_mile_home",
+            "service": "maestro",
             "content": f"Check out your cart of {len(cart.items)} products (${total}, Stripe test mode).",
         },
     ))

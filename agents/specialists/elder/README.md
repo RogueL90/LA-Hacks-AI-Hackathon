@@ -14,4 +14,4 @@ Finds fall hazards in a 3D model of a home, focused on the walk an older person 
 - In: `ModeRequest` (mode `elder`) with a profile: person, age, mobility aid, night trips, budget
 - Out: `ModeResult` with hazards, measurements, fixes and a product search for each fix
 
-Part of Last Mile Home; reached through the Last Mile Home coordinator in ASI:One.
+Part of Maestro; reached through the Maestro coordinator in ASI:One.

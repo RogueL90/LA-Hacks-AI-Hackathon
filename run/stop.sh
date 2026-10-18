@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop Last Mile Home's agent processes (ports 8200, 8201 and 8202).
+# Stop Maestro's agent processes (ports 8200, 8201 and 8202).
 for port in 8200 8201 8202; do
   pid=$(lsof -nP -iTCP:$port -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $2}')
   if [ -n "$pid" ]; then

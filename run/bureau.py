@@ -1,6 +1,6 @@
 """Run Shresth's agents.
 
-    .venv/bin/python -m run.bureau front   # Last Mile Home (the coordinator ASI:One talks to), port 8200
+    .venv/bin/python -m run.bureau front   # Maestro (the coordinator ASI:One talks to), port 8200
     .venv/bin/python -m run.bureau team    # Space Builder + the four specialists, port 8201
     .venv/bin/python -m run.bureau actions # Pranay's Product Finder, Cart, Payment Verifier, Claim Filer, port 8202
     .venv/bin/python -m run.bureau all     # everything in one process (tests, or a single-machine fallback)

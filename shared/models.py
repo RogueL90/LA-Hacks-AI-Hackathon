@@ -1,4 +1,4 @@
-"""Shared message contracts for every Last Mile Home agent and service.
+"""Shared message contracts for every Maestro agent and service.
 
 Owned by Shresth: tell him before changing anything here. Build against these types only.
 Units: meters, USD. Coordinates: x right, y up, z forward; origin = room corner.
