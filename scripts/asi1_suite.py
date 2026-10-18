@@ -145,7 +145,7 @@ SCENARIOS = {
         (f"Fall check for my mom, she's 79 and uses a cane, budget $200. {VIDEO}",
          lambda t, c: (t.title().startswith("Elder safety"), "elder results")),
         ("Now check the same house for my 1 year old son too.",
-         lambda t, c: (t.title().startswith("Baby-proofing") or has(t, "child"), "switches to baby-proofing")),
+         lambda t, c: (t.title().startswith("Baby-proofing"), "switches to baby-proofing")),
     ],
     "spanish": [
         (f"Revisa la casa de mi papá: tiene 84 años, usa andador y se levanta de noche. Presupuesto 300 dólares. {VIDEO}",

@@ -219,6 +219,13 @@ async def route(ctx: Context, sender: str, state: dict, files: list[dict], selec
         # "And list everything for insurance" on baby results: a switch to the claim, not approving baby fixes.
         selection = {**selection, "action": "choose_mode"}
         ctx.logger.info(f"approve for {selection['mode']} while {shown} results are shown -> choose_mode")
+    child = selection.get("child_age_months")
+    if child not in (None, "") and shown and shown != "baby" and selection.get("mode") == shown \
+            and str((state.get("answers") or {}).get("child_age_months", "")) != str(child):
+        # Live: "now check the same house for my 1 year old too" became "do BOTH checks" with mode=elder.
+        # The elder results are already shown, so the new part is the baby-proofing check.
+        selection = {**selection, "mode": "baby", "action": "choose_mode"}
+        ctx.logger.info(f"child age given while {shown} results are shown -> baby-proofing")
     if selection.get("action") in ("submit_intake", "choose_mode") and not files and repeats_answers(state, selection):
         # e.g. "Following up on the assessment... Dad is 84, uses a walker... recommend products within $300".
         selection = {**selection, "action": "approve_plan" if SHOP_WORDS.search(text) else "show_results"}

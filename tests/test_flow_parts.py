@@ -303,3 +303,33 @@ def test_a_message_that_mentions_a_video_without_the_link_asks_for_the_link(ctx)
     assert "didn't come through" in ctx.texts()[-1] and "direct video link" in ctx.texts()[-1]
     run(coord.route(ctx, USER, {}, [], {"action": "choose_mode", "mode": "elder"}, "Check my dad's house for falls."))
     assert "Please attach a 30-second video" in ctx.texts()[-1] and "web link" not in ctx.texts()[-1]
+
+
+def test_a_child_age_on_elder_results_runs_the_baby_check():
+    """Live: "now check the same house for my 1 year old" was relayed as "do BOTH" with mode=elder,
+    and the elder results were shown again."""
+    runs = []
+
+    async def fake_intake(ctx, sender, state, selection, intro=""):
+        runs.append(selection.get("mode"))
+
+    def ask(answers, selection):
+        state = {"job_id": "j", "space_id": "s", "result": {"mode": "elder", "findings": []}, "answers": answers}
+        run(coord.route(FakeCtx(), USER, state, [], selection, "Analyze the same video for BOTH needs now."))
+
+    async def fake_results(ctx, sender, state, intro=""):
+        runs.append("shown again")
+
+    orig, orig_results = coord.on_intake, coord.show_results
+    coord.on_intake, coord.show_results = fake_intake, fake_results
+    try:
+        elder = {"age": "79", "mobility_aid": "cane", "budget_usd": "200"}
+        ask(dict(elder), {"action": "choose_mode", "mode": "elder", "mobility_aid": "cane", "budget_usd": "200",
+                          "child_age_months": "12"})
+        assert runs == ["baby"]
+        # The same child age restated after baby-proofing was already done isn't a new request.
+        ask({**elder, "child_age_months": "12"}, {"action": "choose_mode", "mode": "elder", "budget_usd": "200",
+                                                  "child_age_months": "12"})
+        assert runs == ["baby", "shown again"]
+    finally:
+        coord.on_intake, coord.show_results = orig, orig_results
