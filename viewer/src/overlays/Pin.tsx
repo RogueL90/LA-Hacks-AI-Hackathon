@@ -22,6 +22,8 @@ export function Pin({ data, objectsById, accent, walking = false, selectedId, on
   const [w, h, d] = objectSize(object);
   const severity = Math.min(5, Math.max(1, Number(data.severity) || 3));
   const selected = selectedId === object.id;
+  // While a cart item is in focus, findings shrink to their severity dot so the item stays in view.
+  const compact = walking || (typeof selectedId === "string" && selectedId.startsWith("cart_"));
   const radius = Math.hypot(w, d) / 2 + 0.12;
   const select = () => onSelect?.(object.id);
 
@@ -44,11 +46,11 @@ export function Pin({ data, objectsById, accent, walking = false, selectedId, on
         position={[x, y + h / 2 + 0.05, z]}
         center
         occlude={walking}
-        distanceFactor={walking ? undefined : 8}
+        distanceFactor={compact ? undefined : 8}
         zIndexRange={[30, 10]}
       >
         <button
-          className={`pin-marker${selected ? " selected" : ""}${walking ? " compact" : ""}`}
+          className={`pin-marker${selected ? " selected" : ""}${compact ? " compact" : ""}`}
           style={{ borderColor: accent }}
           // The marker lives in the canvas's container: stop the event, or the scene's "clicked
           // nothing" handler deselects right away.
@@ -63,7 +65,7 @@ export function Pin({ data, objectsById, accent, walking = false, selectedId, on
           <span className="pin-severity" style={{ background: accent }}>
             {severity}
           </span>
-          {(!walking || selected) && <span className="pin-title">{data.title ?? object.label}</span>}
+          {(!compact || selected) && <span className="pin-title">{data.title ?? object.label}</span>}
         </button>
       </Html>
     </group>

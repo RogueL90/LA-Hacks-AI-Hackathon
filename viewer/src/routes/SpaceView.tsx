@@ -9,6 +9,7 @@ import type { OverlaySet, Space } from "../lib/types";
 import { Dollhouse, spaceBounds } from "../scene/Dollhouse";
 import { MODE_PRESETS, THEME, isMode } from "../modes/presets";
 import type { WalkCmd, WalkEntry, WalkInput } from "../scene/WalkControls";
+import { CartPanel, type CartItem } from "./CartPanel";
 
 const KEY_CMDS: Record<string, WalkCmd> = {
   ArrowUp: "forward", w: "forward", W: "forward",
@@ -84,6 +85,8 @@ export function SpaceView() {
   const [walk, setWalk] = useState<WalkEntry | null>(null);
   const [walkRoom, setWalkRoom] = useState<string | null>(null);
   const walkInput = useRef<WalkInput>({ queue: [], held: null });
+  const [cartOpen, setCartOpen] = useState(true);
+  const [focus, setFocus] = useState<{ point: [number, number, number]; key: number; from?: [number, number] } | null>(null);
 
   // Arrow keys / WASD walk, Escape leaves the tour.
   useEffect(() => {
@@ -166,6 +169,45 @@ export function SpaceView() {
   const level = levelChoice ?? (levels.includes(paramLevel) ? paramLevel : pinnedLevel ?? levels[0] ?? 0);
   const visible = useMemo(() => (state.status === "ready" ? onLevel(state.space, level) : null), [state, level]);
 
+  // Cart items placed in the home (see before you buy): every unit, and one entry per cart item.
+  const ghosts = useMemo(
+    () =>
+      state.status === "ready"
+        ? (state.overlaySet?.overlays ?? [])
+            .filter((o) => o.type === "ghost_object" && Array.isArray(o.data?.position))
+            .map((o) => o.data as CartItem)
+        : [],
+    [state],
+  );
+  const cartItems = useMemo(() => ghosts.filter((g) => (g.unit ?? 0) === 0).sort((a, b) => a.item - b.item), [ghosts]);
+  const roomLevel = useMemo(
+    () => (state.status === "ready" ? new Map(state.space.rooms.map((r) => [r.id, r.level ?? 0])) : new Map<string, number>()),
+    [state],
+  );
+  useEffect(() => {
+    if (cartItems.length) setCartOpen(true); // a new cart arrived (live): show it
+  }, [cartItems.length]);
+  const roomCenter = (roomId: string): [number, number] | undefined => {
+    if (state.status !== "ready") return undefined;
+    const pts = state.space.rooms.find((r) => r.id === roomId)?.polygon ?? [];
+    if (!pts.length) return undefined;
+    return [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length];
+  };
+  const focusOn = (item: CartItem) =>
+    setFocus({ point: item.position as [number, number, number], key: performance.now(), from: roomCenter(item.room_id) });
+  // ?item=cart_2_0 opens the view on one cart item (a link from the chat, or a check).
+  const itemParam = params.get("item");
+  const itemOpened = useRef(false);
+  useEffect(() => {
+    if (itemOpened.current || !itemParam) return;
+    const item = ghosts.find((g) => g.id === itemParam);
+    if (!item) return;
+    itemOpened.current = true;
+    setLevelChoice(roomLevel.get(item.room_id) ?? 0);
+    setSelectedId(item.id);
+    focusOn(item);
+  }, [ghosts, itemParam, roomLevel]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const camera = useMemo(() => {
     if (!visible) return null;
     const { center, span } = spaceBounds(visible);
@@ -178,6 +220,13 @@ export function SpaceView() {
   const { overlaySet } = state;
   const space = visible!;
   const selected = space.objects.find((o) => o.id === selectedId) ?? null;
+  const selectedItem = ghosts.find((g) => g.id === selectedId) ?? null;
+  const pickItem = (item: CartItem) => {
+    setWalk(null);
+    setLevelChoice(roomLevel.get(item.room_id) ?? level);
+    setSelectedId(item.id);
+    focusOn(item);
+  };
   const pins = (overlaySet?.overlays ?? []).filter((o) => o.type === "pin").map((o) => o.data ?? {});
   const findingsFor = (objectId: string) => pins.filter((p) => p.object_id === objectId);
   const onFloor = new Set(space.objects.map((o) => o.id));
@@ -206,8 +255,20 @@ export function SpaceView() {
             setSelectedId(null);
           }}
           onWalkRoom={setWalkRoom}
+          focus={focus}
         />
       </Canvas>
+
+      {!isSnapshot && cartItems.length > 0 && !walk && (
+        <CartPanel
+          items={cartItems}
+          selectedId={selectedId}
+          accent={preset?.accent ?? "#3d8bd3"}
+          open={cartOpen}
+          onToggle={() => setCartOpen((o) => !o)}
+          onPick={pickItem}
+        />
+      )}
 
       {!isSnapshot && (
         <header className="topbar">
@@ -306,8 +367,30 @@ export function SpaceView() {
           )}
         </aside>
       )}
-      {!isSnapshot && !selected && pinsHere > 0 && (
-        <aside className="findings-hint">
+      {!isSnapshot && selectedItem && (
+        <aside className="side-card">
+          <p className="eyebrow" style={{ color: preset?.accent }}>In your cart · placed where it goes</p>
+          <h2>{selectedItem.title ?? selectedItem.label}</h2>
+          <p className="price">
+            ${Number(selectedItem.price_usd).toFixed(2)}
+            {Number(selectedItem.quantity) > 1 ? ` × ${selectedItem.quantity}` : ""} · {selectedItem.merchant}
+          </p>
+          {selectedItem.image_url && <img src={selectedItem.image_url} alt="" referrerPolicy="no-referrer" />}
+          {(selectedItem.finding_title || selectedItem.fix) && (
+            <section className="finding" style={{ borderColor: preset?.accent }}>
+              {selectedItem.finding_title && <strong>Fixes: {selectedItem.finding_title}</strong>}
+              {selectedItem.fix && <p>{selectedItem.fix}</p>}
+            </section>
+          )}
+          {selectedItem.url && (
+            <a className="store-link" href={selectedItem.url} target="_blank" rel="noopener noreferrer">
+              View at {selectedItem.merchant} ↗
+            </a>
+          )}
+        </aside>
+      )}
+      {!isSnapshot && !selected && !selectedItem && pinsHere > 0 && (
+        <aside className={`findings-hint${cartItems.length > 0 && cartOpen && !walk ? " beside-cart" : ""}`}>
           {live && <span className="live-dot" />}
           {pinsHere} finding{pinsHere === 1 ? "" : "s"} on this floor · click a marker to see what's flagged and why
         </aside>

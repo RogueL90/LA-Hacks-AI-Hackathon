@@ -18,6 +18,9 @@ export interface OverlayProps {
   selectedId?: string | null;
   /** Clicking a marker selects its object, which opens the "what's flagged and why" card. */
   onSelect?: (id: string) => void;
+  /** Rooms on the visible floor: overlays placed by room (cart items) only show on their own floor. */
+  roomIds?: Set<string>;
+  night?: boolean;
 }
 
 const RENDERERS: Record<Overlay["type"], (p: OverlayProps) => JSX.Element | null> = {
@@ -36,9 +39,10 @@ interface Props {
   walking?: boolean;
   selectedId?: string | null;
   onSelect?: (id: string) => void;
+  roomIds?: Set<string>;
 }
 
-export function OverlayLayer({ overlays, objectsById, preset, walking, selectedId, onSelect }: Props) {
+export function OverlayLayer({ overlays, objectsById, preset, walking, selectedId, onSelect, roomIds }: Props) {
   const accent = preset?.accent ?? NEUTRAL_ACCENT;
   return (
     <group name="overlays">
@@ -53,6 +57,8 @@ export function OverlayLayer({ overlays, objectsById, preset, walking, selectedI
             walking={walking}
             selectedId={selectedId}
             onSelect={onSelect}
+            roomIds={roomIds}
+            night={preset?.night ?? false}
           />
         ) : null;
       })}
