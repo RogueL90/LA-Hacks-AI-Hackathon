@@ -111,7 +111,12 @@ class DebugBuildRequest(BaseModel):
     effort: Literal["low", "medium", "high", "xhigh"] = "low"
     fps: Optional[float] = None  # frames per second to sample (default 1, spread over long videos)
     image_px: Optional[int] = None  # longest edge of each frame sent to Claude
-    thinking: bool = True  # False = Sonnet 5.5 "between_tools": no reasoning pass, faster
+    thinking: bool = True  # False = Sonnet 5.5 "between_tools": no reasoning pass
+    mode: Optional[Literal["parallel", "single"]] = None  # extraction strategy (default: EXTRACT_MODE)
+    layout_effort: Optional[Literal["low", "medium", "high"]] = None  # parallel mode: the layout pass
+    layout_px: Optional[int] = None
+    layout_thinking: Optional[bool] = None
+    room_frames: Optional[int] = None  # parallel mode: frames sent with each room's call
 
 
 @app.get("/test", response_class=HTMLResponse)
@@ -133,6 +138,10 @@ def debug_build(body: DebugBuildRequest) -> dict:
             fps=body.fps,
             image_px=body.image_px,
             thinking=body.thinking,
+            mode=body.mode,
+            tuning={k: v for k, v in {"layout_effort": body.layout_effort, "layout_px": body.layout_px,
+                                      "layout_thinking": body.layout_thinking, "room_frames": body.room_frames}.items()
+                    if v is not None},
         )
         storage.save_space(space)
     except Exception as exc:

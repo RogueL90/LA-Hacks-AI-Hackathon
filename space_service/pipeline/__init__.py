@@ -45,6 +45,8 @@ def run_pipeline(
     fps: Optional[float] = None,
     image_px: Optional[int] = None,
     thinking: bool = True,
+    mode: Optional[str] = None,
+    tuning: Optional[dict] = None,
 ) -> Space:
     """The real pipeline (ignores USE_PREBUILT). `stats` gets per-step timings and token usage."""
     from pipeline import extract, frames, ids, layout, scale
@@ -55,7 +57,7 @@ def run_pipeline(
     stats["frames"] = len(frame_set)
     stats["frames_s"] = round(time.perf_counter() - t0, 2)
     raw = extract.extract_scene(frame_set, effort=effort, stats=stats, image_px=image_px or extract.LLM_IMAGE_PX,
-                                thinking=thinking)
+                                thinking=thinking, mode=mode, tuning=tuning)
     t1 = time.perf_counter()
     raw = scale.apply_scale(raw)
     raw = layout.solve(raw)

@@ -11,6 +11,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 # low | medium | high: more effort = more thinking = slower and pricier.
 ANTHROPIC_EFFORT = os.getenv("ANTHROPIC_EFFORT", "medium")
+# "parallel": a quick layout call, then one objects call per room at the same time (fast).
+# "single": one call for the whole home (slower, kept for comparison).
+EXTRACT_MODE = os.getenv("EXTRACT_MODE", "parallel")
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
 # Absolute base URLs; Space.viewer_url / snapshot_url are built from these.
