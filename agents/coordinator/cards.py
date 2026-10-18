@@ -311,7 +311,8 @@ def _quote_row(q: ProductQuote, link: bool) -> dict:
     return {"children": children}
 
 
-def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_url: str, notes: dict | None = None) -> dict:
+def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_url: str, notes: dict | None = None,
+              total_label: str | None = None) -> dict:
     """The products found for the chosen fixes, then the service fee (store links come after paying)."""
     notes = notes or {}
     extra = []
@@ -330,18 +331,18 @@ def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_u
     return {"root": {
         "type": "section",
         "title": f"Your cart · {len(cart.items)} product{'s' if len(cart.items) != 1 else ''}",
-        "subtitle": f"Subtotal {_money(cart.subtotal_usd)}, most important fixes first",
+        "subtitle": f"{_money(cart.subtotal_usd)} + {fee_label} service fee = {total_label or fee_label}",
         "children": [
             {"type": "group", "direction": "row", "gap": 6, "children": [
                 budget_badge, {"type": "badge", "label": "Store pages checked", "variant": "success"}]},
             {"type": "list", "items": [_quote_row(q, link=False) for q in cart.items[:10]]},
             *extra,
             {"type": "divider"},
-            {"type": "text", "value": f"Pay the {fee_label} service fee to get the store link for every item. "
-                                      "You buy on each store's site: this is a handoff, not an order."},
-            {"type": "text", "value": "Pay with the secure Stripe link in the message above or ASI:One's Pay button "
-                                      "(test mode · card 4242 4242 4242 4242 · any future date · any CVC). Your store "
-                                      "links appear here as soon as Stripe confirms the payment.", "style": "muted"},
+            {"type": "text", "value": f"Check out {total_label or fee_label} with the Stripe link in the message above "
+                                      "or ASI:One's Pay button. Demo checkout in Stripe test mode: card 4242 4242 4242 "
+                                      "4242, any future date, any CVC. Nothing is really charged or shipped."},
+            {"type": "text", "value": "Your order confirmation and the store pages appear here as soon as Stripe "
+                                      "confirms the payment.", "style": "muted"},
         ],
     }}
 
@@ -365,25 +366,27 @@ def payment_card(fee_label: str, checkout_url: str) -> dict:
 
 
 def receipt_card(amount: str, reference: str, cart: CartResult | None = None) -> dict:
+    """Order confirmation for the demo checkout: the products, what was paid, and that it's a demo."""
     items = cart.items if cart else []
     children = [
         {"type": "group", "direction": "row", "gap": 6, "children": [
             {"type": "badge", "label": "Paid", "variant": "success"},
-            {"type": "badge", "label": "Stripe test mode, not a real charge", "variant": "info"}]},
-        {"type": "text", "value": f"Reference {reference}", "style": "muted"},
+            {"type": "badge", "label": "Demo order · Stripe test mode", "variant": "info"}]},
+        {"type": "text", "value": f"Order reference {reference}", "style": "muted"},
     ]
     if items:
         children += [
-            {"type": "heading", "value": "Your store links", "level": 3},
-            {"type": "list", "items": [_quote_row(q, link=True) for q in items[:10]]},
-            {"type": "text", "value": "The store links are in the message above. Nothing has been ordered for you.",
-             "style": "muted"},
+            {"type": "heading", "value": "In your order", "level": 3},
+            {"type": "list", "items": [_quote_row(q, link=False) for q in items[:10]]},
+            {"type": "text", "value": "Demo checkout: nothing is really charged or shipped. In a real deployment Last "
+                                      "Mile Home would place these orders with each store; the store pages are in the "
+                                      "message above.", "style": "muted"},
         ]
     children.append({"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}})
     return {"root": {
         "type": "section",
-        "title": "Payment received",
-        "subtitle": f"{amount} service fee" + (f" · subtotal {_money(cart.subtotal_usd)} at the stores" if items else ""),
+        "title": "Order placed (demo)",
+        "subtitle": f"{amount} paid" + (f" · {len(items)} product{'s' if len(items) != 1 else ''}" if items else ""),
         "children": children,
     }}
 

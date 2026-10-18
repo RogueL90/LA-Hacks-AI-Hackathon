@@ -220,9 +220,52 @@ def test_paying_without_tapping_anything_posts_the_receipt(fake_stripe, monkeypa
         fake_stripe["paid"].add("cs_test_hosted_1")  # the user pays with the link; taps nothing
         for _ in range(100):
             await asyncio.sleep(0.01)
-            if ctx.last_card_title() == "Payment received":
+            if ctx.last_card_title() == "Order placed (demo)":
                 break
 
     run(flow())
-    assert ctx.last_card_title() == "Payment received"
+    assert ctx.last_card_title() == "Order placed (demo)"
     assert coord.load(ctx, USER)["payment"]["status"] == "paid"
+
+
+def test_the_cart_is_checked_out_as_an_itemized_demo_order(fake_stripe):
+    searches = []
+    ctx = FakeCtx(agents=shop_agents(searches))
+    state = plan_state()
+    run(coord.shop(ctx, USER, state))
+    lines = fake_stripe["last_items"]
+    assert [l["name"] for l in lines] == ["Product elder_grab_1", "Product elder_rug_1", "Last Mile Home service fee"]
+    assert fake_stripe["last_amount"] == "41.00"  # $20 + $20 products + $1 fee
+    request = next(m for _, m in ctx.sent if type(m).__name__ == "RequestPayment")
+    assert request.accepted_funds[0].amount == "41.00"
+    assert state["payment"]["amount"] == "41.00" and state["payment"]["fee"] == "1.00"
+    assert any("added them to your cart" in t and "**$41.00**" in t for t in ctx.texts())
+
+
+def test_after_the_order_the_wrap_up_has_summary_orders_next_steps_and_the_3d_link(fake_stripe, monkeypatch):
+    monkeypatch.setattr(coord, "PAYMENT_POLL_FAST_S", 0.01)
+
+    async def verifier(req):
+        from shared.models import VerifyPaymentResult
+        return VerifyPaymentResult(job_id=req.job_id, ok=True, verified=req.transaction_id in fake_stripe["paid"], detail="t")
+
+    ctx = FakeCtx(agents={**shop_agents([]), "payment_verifier": verifier})
+    state = plan_state()
+    state["result"]["viewer_url"] = "http://127.0.0.1:5173/s/sp1?mode=elder&o=ov1&live=1"
+
+    async def flow():
+        await coord.shop(ctx, USER, state)
+        coord.save(ctx, USER, state)
+        fake_stripe["paid"].add("cs_test_hosted_1")
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if ctx.last_card_title() == "Order placed (demo)":
+                break
+
+    run(flow())
+    text = ctx.texts()[-1]
+    assert "**Order placed (demo):** 2 products, $41.00 paid" in text
+    assert "**Summary:** 3 hazards" in text
+    assert "[Product elder_grab_1](https://s/elder_grab_1)" in text      # what was ordered, linked
+    assert "**Next steps:**" in text and "No purchase needed: move it" in text  # the fix without a product
+    assert "[Open your home in 3D](http://127.0.0.1:5173/s/sp1" in text

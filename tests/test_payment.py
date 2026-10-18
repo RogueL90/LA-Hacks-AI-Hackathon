@@ -111,7 +111,7 @@ def test_paid_pay_link_is_found_and_confirmed_once(verifier_agent, fake_stripe):
     fake_stripe["paid"].add("cs_test_hosted_1")
     run(coord.check_payment(ctx, USER, state))
     assert state["payment"]["status"] == "paid"
-    assert ctx.last_card_title() == "Payment received"
+    assert ctx.last_card_title() == "Order placed (demo)"
     assert verifier_agent.calls == ["cs_test_hosted_1"]  # one request, for the paid checkout
     assert any("[Grab bar](https://store.example/grab-bar)" in t for t in ctx.texts())  # a clickable store link
 
@@ -198,5 +198,5 @@ def test_payment_notice_and_ive_paid_together_ask_the_verifier_once(verifier_age
 
     run(both())
     assert verifier_agent.calls == ["cs_test_embedded_1"]  # one request, not two at once
-    receipts = [t for t in ctx.texts() if t.startswith("Payment received")]
+    receipts = [t for t in ctx.texts() if "Order placed (demo)" in t]
     assert len(receipts) == 1  # the second path says "You're all paid" instead

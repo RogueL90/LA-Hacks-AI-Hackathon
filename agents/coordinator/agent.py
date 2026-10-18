@@ -30,7 +30,7 @@ from uagents_core.contrib.protocols.payment import (
     payment_protocol_spec,
 )
 
-from agents.coordinator import cards
+from agents.coordinator import cards, summary
 from agents.coordinator.understand import fill_missing, fix_mode, understand
 from agents.specialists.baby.logic import analyze as baby_analyze
 from agents.specialists.claim.logic import analyze as claim_analyze
@@ -705,19 +705,30 @@ def cart_notes(state: dict, queries: list[ProductQuery], found: FindProductsResu
     return {"left_out": list(dict.fromkeys(left_out)), "not_found": list(dict.fromkeys(not_found))}
 
 
+def _qty(q) -> int:
+    return max(1, int((q.specs or {}).get("quantity", 1) or 1))
+
+
 async def request_fee(ctx: Context, sender: str, state: dict):
+    """The cart becomes a demo order: one Stripe test-mode checkout with every product as its own line
+    plus the service fee. Nothing is ordered from the stores; the store pages come with the receipt."""
     cart = CartResult.model_validate(state["cart"])
     if not stripe_pay.enabled():
-        ctx.logger.error("Stripe test keys are missing; cannot request the service fee")
+        ctx.logger.error("Stripe test keys are missing; cannot take the payment")
         await send(ctx, sender, text_message(
-            "Payments aren't switched on yet, so I can't take the service fee right now. Your cart is saved."))
+            "Payments aren't switched on yet, so I can't check out right now. Your cart is saved."))
         return
     fee = format_service_fee_usd(cart.service_fee_usd)
+    total = format_service_fee_usd(round(cart.subtotal_usd + float(fee), 2))
+    lines = [{"name": _short(q.title, 120), "unit_usd": q.price_usd, "quantity": _qty(q), "image": q.image_url,
+              "description": f"From {q.merchant} (demo order: nothing is actually bought)"} for q in cart.items]
+    lines.append({"name": "Last Mile Home service fee", "unit_usd": float(fee), "quantity": 1,
+                  "description": "Finding products that fit your measured home"})
     reference = state.get("job_id") or str(uuid4())
     t0 = time.monotonic()
     try:
         checkout = await stripe_pay.create_checkout(
-            reference, f"Store links for {len(cart.items)} products that fit your measured space", fee)
+            reference, f"{len(cart.items)} products that fit your measured space", total, items=lines)
     except Exception:
         ctx.logger.exception("Stripe checkout failed")
         await send(ctx, sender, text_message("I couldn't reach the payment provider. Please say \"approve\" again in a moment."))
@@ -725,21 +736,22 @@ async def request_fee(ctx: Context, sender: str, state: dict):
     t_stripe = time.monotonic() - t0
     # Send RequestPayment before anything slow (or any LLM call) so ASI:One renders the payment card.
     await ctx.send(sender, RequestPayment(
-        accepted_funds=[Funds(currency="USD", amount=fee, payment_method="stripe")],
+        accepted_funds=[Funds(currency="USD", amount=total, payment_method="stripe")],
         recipient=str(coordinator.address),
         deadline_seconds=1800,
         reference=reference,
-        description=f"Last Mile Home service fee: ${fee}",
+        description=f"Last Mile Home demo order: {len(cart.items)} products + ${fee} service fee = ${total}",
         metadata={
             "stripe": checkout["embedded"],
             "service": "last_mile_home",
-            "content": f"Pay the ${fee} service fee to get the store links for your {len(cart.items)} products.",
+            "content": f"Check out your cart of {len(cart.items)} products (${total}, Stripe test mode).",
         },
     ))
     state["payment"] = {
         "status": "requested",
         "reference": reference,
         "fee": fee,
+        "amount": total,
         "stripe_sessions": [checkout["embedded_id"], checkout["hosted_id"]],
         "checkout_url": checkout["hosted_url"],
     }
@@ -750,18 +762,20 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         over += f" To stay within your ${budget:,.0f} budget I left out: {'; '.join(notes['left_out']).lower()}."
     if notes.get("not_found"):
         over += f" I couldn't confirm a product page for: {'; '.join(notes['not_found']).lower()}."
-    # Plain ASI:One chat may not render embedded Stripe checkout, so the card's Pay button opens the hosted page.
     await send_card(
         ctx, sender, state,
-        f"I found {len(cart.items)} product{'s' if len(cart.items) != 1 else ''} that fit, ${cart.subtotal_usd:,.2f} in total.{over}\n\n"
-        + "\n".join(f"- {_short(q.title)}: ${q.price_usd:,.2f}"
-                    + (f" × {int((q.specs or {}).get('quantity', 1))}" if int((q.specs or {}).get('quantity', 1) or 1) > 1 else "")
-                    + f" at {q.merchant}" for q in cart.items[:10]) + "\n\n"
-        f"**[Pay the ${fee} service fee with Stripe]({checkout['hosted_url']})** (or use ASI:One's Pay button). "
-        "I'll post your store links here as soon as the payment goes through.",
-        "custom", cards.cart_card(cart, budget, f"${fee}", checkout["hosted_url"], notes), terminal=True)
+        f"I found {len(cart.items)} product{'s' if len(cart.items) != 1 else ''} that fit and added "
+        f"{'them' if len(cart.items) != 1 else 'it'} to your cart.{over}\n\n"
+        + "\n".join(f"- {_short(q.title)}: ${q.price_usd:,.2f}" + (f" × {_qty(q)}" if _qty(q) > 1 else "")
+                    + f" at {q.merchant}" for q in cart.items[:10])
+        + f"\n\nProducts ${cart.subtotal_usd:,.2f} + ${fee} service fee = **${total}**.\n\n"
+        f"**[Check out ${total} with Stripe]({checkout['hosted_url']})** (or ASI:One's Pay button). It's a demo "
+        "checkout in Stripe test mode: use card 4242 4242 4242 4242, nothing is really charged or shipped. "
+        "I'll confirm your order here as soon as it goes through.",
+        "custom", cards.cart_card(cart, budget, f"${fee}", checkout["hosted_url"], notes, f"${total}"), terminal=True)
     watch_payment(ctx, sender, reference)
-    ctx.logger.info(f"job={reference} fee requested: Stripe {t_stripe:.1f} s, replies {time.monotonic() - t0 - t_stripe:.1f} s")
+    ctx.logger.info(f"job={reference} checkout requested (${total}): Stripe {t_stripe:.1f} s, "
+                    f"replies {time.monotonic() - t0 - t_stripe:.1f} s")
 
 
 # ASI:One's payment notice (CommitPayment) and the user's "I've paid" tap can arrive together. Two
@@ -792,7 +806,7 @@ async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
 
 async def _verify(ctx: Context, state: dict, session_id: str) -> bool:
     payment = state.get("payment") or {}
-    fee = payment.get("fee") or format_service_fee_usd(FLAT_SERVICE_FEE_USD)
+    fee = payment.get("amount") or payment.get("fee") or format_service_fee_usd(FLAT_SERVICE_FEE_USD)  # the order total
     req = VerifyPaymentRequest(job_id=state.get("job_id") or "", service_fee_usd=fee, transaction_id=session_id)
     reply = await ask(ctx, "payment_verifier", req, VerifyPaymentResult, 20)
     if reply is not None and reply.ok:
@@ -847,7 +861,7 @@ async def find_paid_session(ctx: Context, state: dict) -> str | None:
     """
     payment = state.get("payment") or {}
     sessions = payment.get("stripe_sessions", [])
-    fee = float(payment.get("fee") or FLAT_SERVICE_FEE_USD)
+    fee = float(payment.get("amount") or payment.get("fee") or FLAT_SERVICE_FEE_USD)  # the order total
     looked = await asyncio.gather(*(stripe_pay.is_paid(sid, expected_usd=fee) for sid in sessions), return_exceptions=True)
     if any(isinstance(x, Exception) for x in looked):
         ctx.logger.warning("Stripe lookup failed; asking the Payment Verifier about each checkout in turn")
@@ -862,22 +876,30 @@ async def find_paid_session(ctx: Context, state: dict) -> str | None:
 
 async def after_payment(ctx: Context, sender: str, state: dict, session_id: str, again: bool = False):
     if (str(ctx.session), session_id) in RECEIPTS:
-        again = True  # the other path (payment notice or "I've paid") already sent the receipt
+        again = True  # the other path (payment notice or "I paid") already sent the receipt
     RECEIPTS.add((str(ctx.session), session_id))
     state["payment"] = {**state.get("payment", {}), "status": "paid", "session": session_id}
     cart = CartResult.model_validate(state["cart"]) if state.get("cart") else None
-    links = "\n".join(f"- [{_short(q.title)}]({q.url}): ${q.price_usd:,.2f} at {q.merchant}"
-                      for q in (cart.items if cart else [])[:10])
-    lead = "You're all paid." if again else f"Payment received: {fee_label(state)}. Thank you!"
-    text = f"{lead} Your store links (a handoff, nothing is ordered for you):\n{links}" if links else lead
-    await send_card(ctx, sender, state, text, "custom", cards.receipt_card(fee_label(state), session_id[-12:], cart))
+    total = f"${state['payment'].get('amount') or format_service_fee_usd(FLAT_SERVICE_FEE_USD)}"
+    links = "\n".join(f"- [{_short(q.title)}]({q.url}): ${q.price_usd:,.2f}" + (f" × {_qty(q)}" if _qty(q) > 1 else "")
+                      + f" at {q.merchant}" for q in (cart.items if cart else [])[:10])
+    if again:
+        text = f"Your order is already placed.\n\nYour products and their store pages:\n{links}" if links \
+            else "Your order is already placed."
+    else:
+        # The wrap-up: summary, what was ordered (store links), next steps, and the 3D view.
+        result = ModeResult.model_validate(state["result"]) if state.get("result") else None
+        text = await summary.wrap_up(result, cart, state.get("cart_notes") or {}, total,
+                                     result.viewer_url, _short) if result else \
+            f"**Order placed (demo):** {total} paid in Stripe test mode.\n\n{links}"
+    await send_card(ctx, sender, state, text, "custom", cards.receipt_card(total, session_id[-12:], cart))
 
 
 async def check_payment(ctx: Context, sender: str, state: dict):
     payment = state.get("payment") or {}
     if not payment.get("stripe_sessions") and payment.get("status") != "paid":
         await send(ctx, sender, text_message(
-            "There's nothing to pay yet. Once you approve a fix plan I'll find products and send you a secure Stripe checkout."))
+            "There's nothing to pay yet. Once you approve a fix plan I'll find products, add them to a cart and send you a Stripe checkout."))
         return
     if payment.get("status") == "paid":
         await after_payment(ctx, sender, state, payment.get("session", ""), again=True)

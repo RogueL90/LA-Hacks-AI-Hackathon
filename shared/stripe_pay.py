@@ -29,18 +29,30 @@ def _cents(amount_usd: str | float) -> int:
     return round(float(amount_usd) * 100)
 
 
-def _line_items(description: str, amount_usd: str) -> list[dict]:
-    return [{
-        "price_data": {
-            "currency": "usd",
-            "product_data": {"name": PRODUCT, "description": description},
-            "unit_amount": _cents(amount_usd),
-        },
-        "quantity": 1,
-    }]
+def _line_items(description: str, amount_usd: str, items: list[dict] | None = None) -> list[dict]:
+    """One line per product in the cart (demo order) plus the service fee, or just the fee."""
+    if not items:
+        return [{
+            "price_data": {
+                "currency": "usd",
+                "product_data": {"name": PRODUCT, "description": description},
+                "unit_amount": _cents(amount_usd),
+            },
+            "quantity": 1,
+        }]
+    lines = []
+    for item in items:
+        product = {"name": item["name"][:250]}
+        if item.get("description"):
+            product["description"] = item["description"][:500]
+        if str(item.get("image") or "").startswith("https://"):
+            product["images"] = [item["image"]]
+        lines.append({"price_data": {"currency": "usd", "product_data": product, "unit_amount": _cents(item["unit_usd"])},
+                      "quantity": max(1, int(item.get("quantity", 1)))})
+    return lines
 
 
-def _create(reference: str, description: str, amount_usd: str) -> dict:
+def _create(reference: str, description: str, amount_usd: str, items: list[dict] | None = None) -> dict:
     client = _client()
     expires_at = int(time.time()) + 1800  # Stripe's minimum is 30 minutes
     metadata = {"reference": reference, "service": "last_mile_home"}
@@ -50,14 +62,14 @@ def _create(reference: str, description: str, amount_usd: str) -> dict:
         "mode": "payment",
         "return_url": f"{RETURN_URL}?session_id={{CHECKOUT_SESSION_ID}}",
         "expires_at": expires_at,
-        "line_items": _line_items(description, amount_usd),
+        "line_items": _line_items(description, amount_usd, items),
         "metadata": metadata,
     })
     hosted = client.v1.checkout.sessions.create(params={
         "mode": "payment",
         "success_url": f"{RETURN_URL}?session_id={{CHECKOUT_SESSION_ID}}",
         "expires_at": expires_at,
-        "line_items": _line_items(description, amount_usd),
+        "line_items": _line_items(description, amount_usd, items),
         "metadata": metadata,
     })
     return {
@@ -83,8 +95,11 @@ def _paid(session_id: str, expected_usd: float | None) -> bool:
     return expected_usd is None or session.amount_total == round(expected_usd * 100)
 
 
-async def create_checkout(reference: str, description: str, amount_usd: str = FEE_USD) -> dict:
-    return await asyncio.to_thread(_create, reference, description, amount_usd)
+async def create_checkout(reference: str, description: str, amount_usd: str = FEE_USD,
+                          items: list[dict] | None = None) -> dict:
+    """items (demo order): [{"name", "unit_usd", "quantity", "image"?, "description"?}], including the
+    service fee as a line; amount_usd must equal their total."""
+    return await asyncio.to_thread(_create, reference, description, amount_usd, items)
 
 
 async def is_paid(session_id: str, expected_usd: float | None = None) -> bool:

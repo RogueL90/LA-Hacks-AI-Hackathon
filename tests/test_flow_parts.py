@@ -144,7 +144,7 @@ def test_cart_card_shows_prices_without_buttons_or_store_links_before_paying():
 
 def test_receipt_card_lists_the_products_without_link_buttons():
     card = json.dumps(ensure_ascii=False, obj=cards.receipt_card("$1.00", "abc", cart()))
-    assert "Payment received" in card and "Grab bar" in card and "redirect" not in card
+    assert "Order placed (demo)" in card and "Grab bar" in card and "redirect" not in card
 
 
 def test_claim_package_card_has_downloads_and_totals():

@@ -105,8 +105,10 @@ def fake_stripe(monkeypatch):
 
     state = {"paid": set(), "created": 0, "lookups": [], "fail_lookup": False}
 
-    async def create_checkout(reference, description, amount_usd="1.00"):
+    async def create_checkout(reference, description, amount_usd="1.00", items=None):
         state["created"] += 1
+        state["last_items"] = items
+        state["last_amount"] = amount_usd
         n = state["created"]
         return {
             "embedded": {"ui_mode": "embedded", "publishable_key": "pk_test_x", "client_secret": f"cs_secret_{n}",
@@ -138,3 +140,14 @@ def fresh_payment_memory():
     coord.RECEIPTS.clear()
     coord.VERIFY_LOCKS.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def offline_summary(monkeypatch):
+    """The wrap-up's next steps come from Claude live; tests use the built-in fallback (no network)."""
+    from agents.coordinator import summary
+
+    async def steps(result, cart, notes):
+        return summary.fallback_steps(result, cart, notes)
+
+    monkeypatch.setattr(summary, "next_steps", steps)
