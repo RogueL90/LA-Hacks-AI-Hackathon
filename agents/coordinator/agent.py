@@ -367,6 +367,13 @@ async def show_results(ctx: Context, sender: str, state: dict, narration: str):
 async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: str):
     result = ModeResult.model_validate(state["result"]) if state.get("result") else None
     finding = next((f for f in result.findings if f.id == finding_id), None) if result else None
+    if not finding and result and finding_id:
+        # Prose like "the armchair hazard" can arrive as a made-up id: match on the words instead.
+        words = {w for w in re.split(r"[^a-z]+", finding_id.lower()) if len(w) > 3} - {"hazard", "finding", "fall", "safety"}
+        finding = max(result.findings, key=lambda f: len(words & set(re.split(r"[^a-z]+", f"{f.title} {f.id}".lower()))),
+                      default=None)
+        if finding and not words & set(re.split(r"[^a-z]+", f"{finding.title} {finding.id}".lower())):
+            finding = None
     if not finding:
         await show_modes(ctx, sender, state, "I couldn't find that item. Pick a mode to start again.")
         return

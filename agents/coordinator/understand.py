@@ -35,7 +35,7 @@ replacement_cost/actual_cash_value/unknown; numbers as plain digits ("$1,200" ->
 Actions:
 - choose_mode: user picks a mode, or asks for a mode's check/report/assessment without giving the form answers (set mode)
 - submit_intake: user answers the form questions (set mode and copy every answer into fields, as plain strings)
-- finding_detail: user asks about one specific finding (set finding_id from the card)
+- finding_detail: user asks about one specific finding (copy its exact finding_id from the card's on_click; never invent one)
 - approve_plan: user approves the fix plan, wants products, or wants to pay
 - decline_plan: user declines or cancels
 - check_payment: user says they paid or asks if the payment went through
@@ -56,7 +56,12 @@ def _custom_actions(node):
         for child in node.get("children", []) or []:
             yield from _custom_actions(child)
         for item in node.get("items", []) or []:
-            if isinstance(item, dict) and item.get("label"):
+            if not isinstance(item, dict):
+                continue
+            if item.get("action"):
+                heading = next((c.get("value") for c in item.get("children", []) if c.get("type") == "heading"), None)
+                yield {"row": heading, "on_click": item["action"].get("selection")}
+            elif item.get("label"):
                 yield {"section": item["label"]}
             yield from _custom_actions(item)
 
