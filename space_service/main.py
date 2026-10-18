@@ -28,7 +28,7 @@ from snapshots import render_snapshot
 
 log = logging.getLogger("space_service")
 
-app = FastAPI(title="Last Mile Home — Space Service")
+app = FastAPI(title="Maestro — Space Service")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
