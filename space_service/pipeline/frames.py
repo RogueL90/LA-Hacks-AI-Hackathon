@@ -39,15 +39,31 @@ def _resolve_local(url: str) -> Path:
     return path
 
 
-def _video_frames(video: Path, prefix: str, limit: int) -> list[dict]:
+def _duration_s(video: Path) -> float:
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+        return float(out.stdout.strip())
+    except (subprocess.SubprocessError, ValueError):
+        return 0.0
+
+
+def _video_frames(video: Path, prefix: str, limit: int, target_fps: float | None = None) -> list[dict]:
     for stale in storage.MEDIA_DIR.glob(f"{prefix}_*.jpg"):  # a re-run of the same job
         stale.unlink()
     pattern = storage.MEDIA_DIR / f"{prefix}_%03d.jpg"
+    # 1 fps, but spread `limit` frames across the whole video when it is longer than `limit` seconds,
+    # so the end of a long walkthrough isn't dropped.
+    duration = _duration_s(video)
+    base = target_fps or 1.0
+    fps = min(base, limit / duration) if duration > 0 else base
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-i", str(video),
-            "-vf", "fps=1,scale='min(1280,iw)':-2",
+            "-vf", f"fps={fps:.4f},scale='min(1280,iw)':-2",
             "-frames:v", str(limit),
             "-q:v", "3",
             str(pattern),
@@ -57,12 +73,13 @@ def _video_frames(video: Path, prefix: str, limit: int) -> list[dict]:
     )
     frames = []
     for i, path in enumerate(sorted(storage.MEDIA_DIR.glob(f"{prefix}_*.jpg"))):
-        # fps=1 emits the frame at t = i seconds.
-        frames.append({"url": _media_url(path.name), "timestamp_s": float(i), "path": str(path), "is_video": True})
+        # The fps filter emits frame i at t = i / fps seconds.
+        frames.append({"url": _media_url(path.name), "timestamp_s": round(i / fps, 2), "path": str(path), "is_video": True})
     return frames
 
 
-def extract_frames(media_urls: list[str], job_id: str, max_frames: int = MAX_FRAMES) -> list[dict]:
+def extract_frames(media_urls: list[str], job_id: str, max_frames: int = MAX_FRAMES,
+                   fps: float | None = None) -> list[dict]:
     """Returns [{"url": public_frame_url, "timestamp_s": float, "path": local_path}, ...]."""
     if not media_urls:
         raise ValueError("no media_urls given")
@@ -74,7 +91,7 @@ def extract_frames(media_urls: list[str], job_id: str, max_frames: int = MAX_FRA
             break
         path = _resolve_local(url)
         if path.suffix.lower() in VIDEO_SUFFIXES:
-            frames += _video_frames(path, f"{safe_job}_{n}", remaining)
+            frames += _video_frames(path, f"{safe_job}_{n}", remaining, fps)
         else:
             frames.append({"url": _media_url(path.name), "timestamp_s": None, "path": str(path), "is_video": False})
     if not frames:

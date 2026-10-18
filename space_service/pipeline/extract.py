@@ -26,10 +26,13 @@ OBJECT_CATALOG = [
     "lamp_table", "ceiling_light", "plant", "toilet", "sink", "bathtub", "shower",
     "mirror", "stairs", "outlet", "cord", "window", "door", "refrigerator", "stove",
     "counter", "cabinet", "laptop", "painting", "clutter",
+    # Safety- and claim-relevant items the specialist agents check for.
+    "grab_bar", "handrail", "night_light", "crib", "baby_gate", "washer", "dryer",
+    "dishwasher", "microwave", "fireplace", "space_heater", "stool", "ottoman", "side_table", "shelf",
 ]
 WALLS = ("x_min", "x_max", "z_min", "z_max")
-LLM_IMAGE_PX = 768  # longest edge; Claude bills ~w*h/750 tokens per image (~450 for 768x432)
-LLM_TIMEOUT_S = 90.0  # keeps the whole build inside the 120 s budget
+LLM_IMAGE_PX = 1024  # longest edge; small hazards (outlets, cords) need the extra detail
+LLM_TIMEOUT_S = 150.0  # high effort with 30 frames; the agents allow 180 s for a build
 LLM_MAX_TOKENS = 16000
 
 
@@ -66,9 +69,14 @@ class ExObject(BaseModel):
     color_hex: str
     material: str
     brand_guess: str
+    model_guess: str  # "55 in LED TV", "queen platform bed"; "" if unknown
     is_loose: bool
     has_cover: bool
     sharp_corners: bool
+    anchored_visible: bool  # a wall strap/anchor is actually visible (tall furniture, TVs)
+    has_handrail: bool  # stairs only: handrails on both sides
+    seat_height_m: float  # toilets only: seat rim height above the floor; 0 otherwise
+    damage_note: str  # visible damage (water stain, crack, burn); "" if none
     confidence: float
     frame_index: int
 
@@ -97,24 +105,39 @@ clearest frame. type must be one of: {", ".join(t for t in OBJECT_CATALOG if t !
 Use "clutter" for loose items on the floor. Give the footprint center (x, z) on the shared plan,
 y_bottom (0 for things standing on the floor; e.g. 0.5 for a TV on a stand, 1.4 for a painting),
 and real-world width/height/depth. rotation_deg is 0 when the object's front faces +z.
-Fill brand_guess with "" if unknown. is_loose is for rugs/mats that can slip, has_cover for outlets,
-sharp_corners for tables and furniture with hard corners. confidence is 0..1.
+
+Be exhaustive about safety-relevant details, because safety inspectors rely on this list: every
+visible electrical outlet (with its height), cord or cable on the floor, rug or mat, grab bar,
+handrail, night light, stair, space heater, and every table or furniture edge a child could hit.
+Include all furniture and appliances (washer, dryer, dishwasher, microwave, crib...), not just big items.
+
+Fields: brand_guess and model_guess ("55 in LED TV", "queen platform bed", "French-door refrigerator")
+are "" if unknown. is_loose is for rugs/mats that can slip (no visible gripper or tape). has_cover is
+for outlets with a cover or plug protector. sharp_corners is for hard-cornered tables and furniture.
+anchored_visible is true only if you can SEE a wall strap or anchor on tall furniture or a TV.
+has_handrail is for stairs with handrails on both sides. seat_height_m is the toilet seat rim height
+(standard ~0.38 m, comfort height ~0.43 m), 0 for everything else. damage_note describes visible
+damage (water stain, crack, burn, mold) or is "". confidence is 0..1.
+
+DOORS: measure each door's width from the frame (standard interior doors are 0.71-0.91 m); do not
+just assume 0.81 m.
 
 SCALE: estimate sizes from reference objects: a standard interior door is 2.03 m tall x 0.81 m wide,
 a kitchen counter is 0.91 m high, an outlet cover is 0.11 m tall, a standard bed is ~2.0 m long.
 Never guess a room smaller than the furniture inside it."""
 
 
-def _image_b64(path: str) -> str:
+def _image_b64(path: str, px: int = LLM_IMAGE_PX) -> str:
     with Image.open(path) as im:
         im = im.convert("RGB")
-        im.thumbnail((LLM_IMAGE_PX, LLM_IMAGE_PX))
+        im.thumbnail((px, px))
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=85)
         return base64.standard_b64encode(buf.getvalue()).decode("ascii")
 
 
-def _call_claude(frames: list[dict], effort: str, stats: dict) -> ExScene:
+def _call_claude(frames: list[dict], effort: str, stats: dict, image_px: int = LLM_IMAGE_PX,
+                 thinking: bool = True) -> ExScene:
     import anthropic
 
     if not ANTHROPIC_API_KEY:
@@ -128,11 +151,16 @@ def _call_claude(frames: list[dict], effort: str, stats: dict) -> ExScene:
         content.append({"type": "text", "text": f"Frame {i}" + (f" (t={ts:.0f}s)" if ts is not None else "")})
         content.append({
             "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": _image_b64(frame["path"])},
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": _image_b64(frame["path"], image_px)},
         })
     content.append({"type": "text", "text": PROMPT})  # images first, instructions last
 
     t0 = time.perf_counter()
+    extra = {}
+    if not thinking:
+        # Sonnet 5.5 turns thinking off with "between_tools" (accepted at effort high or below):
+        # the model writes the JSON directly, which is much faster.
+        extra["thinking"] = {"type": "between_tools"}
     response = client.beta.messages.parse(
         model=ANTHROPIC_MODEL,
         max_tokens=LLM_MAX_TOKENS,
@@ -142,11 +170,13 @@ def _call_claude(frames: list[dict], effort: str, stats: dict) -> ExScene:
         # On a safety decline, the API re-runs the request on a fallback model in the same call.
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
+        **extra,
     )
     stats.update({
         "llm_s": round(time.perf_counter() - t0, 2),
         "model": response.model,
         "effort": effort,
+        "thinking": thinking,
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
         "stop_reason": response.stop_reason,
@@ -200,6 +230,16 @@ def to_raw(scene: ExScene, frames: list[dict]) -> dict:
         }
         if o.brand_guess:
             attributes["brand_guess"] = o.brand_guess
+        if o.model_guess:
+            attributes["model_guess"] = o.model_guess
+        if o.anchored_visible:
+            attributes["anchored"] = True  # otherwise unknown: an anchor that wasn't seen isn't proof
+        if o.type == "stairs":
+            attributes["handrail_both_sides"] = o.has_handrail
+        if o.type == "toilet" and 0.3 <= o.seat_height_m <= 0.6:
+            attributes["seat_height_m"] = round(o.seat_height_m, 3)
+        if o.damage_note:
+            attributes["damage_note"] = o.damage_note
         objects.append({
             "type": o.type if o.type in OBJECT_CATALOG else "clutter",
             "label": o.label.strip() or o.type.replace("_", " "),
@@ -221,12 +261,13 @@ def to_raw(scene: ExScene, frames: list[dict]) -> dict:
     }
 
 
-def extract_scene(frames: list[dict], effort: Optional[str] = None, stats: Optional[dict] = None) -> dict:
+def extract_scene(frames: list[dict], effort: Optional[str] = None, stats: Optional[dict] = None,
+                  image_px: int = LLM_IMAGE_PX, thinking: bool = True) -> dict:
     """Returns a raw scene dict: {"rooms": [...], "doors": [...], "objects": [...]}.
 
     `stats` (if given) is filled with latency, model and token usage.
     """
-    scene = _call_claude(frames, effort or ANTHROPIC_EFFORT, stats if stats is not None else {})
+    scene = _call_claude(frames, effort or ANTHROPIC_EFFORT, stats if stats is not None else {}, image_px, thinking)
     if not scene.rooms:
         raise ValueError("Claude found no rooms in the media")
     return to_raw(scene, frames)

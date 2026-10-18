@@ -4,6 +4,7 @@ Run:  uvicorn main:app --reload --port 8000   (from space_service/)
 """
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -107,7 +108,10 @@ async def upload_media(file: UploadFile = File(...)) -> dict:
 class DebugBuildRequest(BaseModel):
     media_urls: list[str]
     max_frames: int = 30
-    effort: Literal["low", "medium", "high"] = "low"
+    effort: Literal["low", "medium", "high", "xhigh"] = "low"
+    fps: Optional[float] = None  # frames per second to sample (default 1, spread over long videos)
+    image_px: Optional[int] = None  # longest edge of each frame sent to Claude
+    thinking: bool = True  # False = Sonnet 5.5 "between_tools": no reasoning pass, faster
 
 
 @app.get("/test", response_class=HTMLResponse)
@@ -119,13 +123,16 @@ def test_page() -> str:
 def debug_build(body: DebugBuildRequest) -> dict:
     """Runs the real pipeline (even with USE_PREBUILT=1) and reports timings + token usage."""
     stats: dict = {}
-    job_id = f"test_{int(time.time())}"
+    job_id = f"test_{int(time.time())}_{uuid.uuid4().hex[:6]}"  # unique even for parallel runs
     try:
         space = run_pipeline(
             SpaceBuildRequest(job_id=job_id, media_urls=body.media_urls),
-            max_frames=max(1, min(body.max_frames, 60)),
+            max_frames=max(1, min(body.max_frames, 100)),
             effort=body.effort,
             stats=stats,
+            fps=body.fps,
+            image_px=body.image_px,
+            thinking=body.thinking,
         )
         storage.save_space(space)
     except Exception as exc:

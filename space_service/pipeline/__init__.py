@@ -42,16 +42,20 @@ def run_pipeline(
     max_frames: Optional[int] = None,
     effort: Optional[str] = None,
     stats: Optional[dict] = None,
+    fps: Optional[float] = None,
+    image_px: Optional[int] = None,
+    thinking: bool = True,
 ) -> Space:
     """The real pipeline (ignores USE_PREBUILT). `stats` gets per-step timings and token usage."""
     from pipeline import extract, frames, ids, layout, scale
 
     stats = stats if stats is not None else {}
     t0 = time.perf_counter()
-    frame_set = frames.extract_frames(request.media_urls, request.job_id, max_frames or frames.MAX_FRAMES)
+    frame_set = frames.extract_frames(request.media_urls, request.job_id, max_frames or frames.MAX_FRAMES, fps)
     stats["frames"] = len(frame_set)
     stats["frames_s"] = round(time.perf_counter() - t0, 2)
-    raw = extract.extract_scene(frame_set, effort=effort, stats=stats)
+    raw = extract.extract_scene(frame_set, effort=effort, stats=stats, image_px=image_px or extract.LLM_IMAGE_PX,
+                                thinking=thinking)
     t1 = time.perf_counter()
     raw = scale.apply_scale(raw)
     raw = layout.solve(raw)
