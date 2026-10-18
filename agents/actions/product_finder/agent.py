@@ -14,6 +14,7 @@ from uagents import Context, Protocol
 
 from agents.actions.envload import ensure_event_loop, load_env
 from agents.actions.service import make_action_agent
+from agents.actions.product_finder.chat import make_chat_protocol
 from agents.actions.product_finder.search import ChaosFailure, find_products
 from agents.actions.tracing import report_error, traced_agent
 from shared.models import FindProductsRequest, FindProductsResult
@@ -24,10 +25,10 @@ ensure_event_loop()
 agent = make_action_agent(
     "product_finder",
     "Home Product Finder",
-    (
-        "Finds real products for a home fix plan (grab bars, baby gates, a desk that fits a "
-        "measured wall) with verified store pages, prices and a backup pick. Part of Last Mile "
-        "Home."
+    (  # Agentverse allows 300 characters
+        "Finds real products online and checks them: ask for \"two 27 inch monitors under $150\", "
+        "\"grab bars for a bathroom\" or \"a baby gate for a 39 in stair\" and it searches stores, "
+        "verifies each product page and price, and replies with links. Part of Last Mile Home."
     ),
     Path(__file__).parent,
     port=8011,
@@ -66,6 +67,8 @@ async def on_find(ctx: Context, sender: str, msg: FindProductsRequest) -> None:
 
 
 agent.include(protocol, publish_manifest=True)
+# Chat Protocol: ASI:One (and anyone on Agentverse) can ask the Product Finder directly.
+agent.include(make_chat_protocol(), publish_manifest=True)
 
 if __name__ == "__main__":
     agent.run()

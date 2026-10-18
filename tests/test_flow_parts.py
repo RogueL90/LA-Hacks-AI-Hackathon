@@ -291,3 +291,15 @@ def test_uploads_signal_rides_on_the_first_reply():
     chats = ctx.chats()
     assert len(chats) == 1  # the reply carries the uploads flag; no separate message
     assert any(isinstance(c, MetadataContent) and c.metadata.get("attachments") == "true" for c in chats[0].content)
+
+
+def test_a_message_that_mentions_a_video_without_the_link_asks_for_the_link(ctx):
+    """Live: the planner relayed "see uploaded video" with no link; "not a web link" made it shop elsewhere."""
+    from agents.coordinator import agent as coord
+
+    state = {}
+    run(coord.route(ctx, USER, state, [], {"action": "choose_mode", "mode": "transform"},
+                    "Transform their office (see uploaded video) into a home office, budget $600."))
+    assert "didn't come through" in ctx.texts()[-1] and "direct video link" in ctx.texts()[-1]
+    run(coord.route(ctx, USER, {}, [], {"action": "choose_mode", "mode": "elder"}, "Check my dad's house for falls."))
+    assert "Please attach a 30-second video" in ctx.texts()[-1] and "web link" not in ctx.texts()[-1]

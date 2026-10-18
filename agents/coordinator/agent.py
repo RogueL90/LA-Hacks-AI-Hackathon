@@ -89,9 +89,9 @@ coordinator = Agent(
     publish_agent_details=True,
     readme_path=str(Path(__file__).with_name("README.md")),
     description=(  # Agentverse allows 300 characters
-        "Upload a short home video or photos: get a 3D model plus elder-safety, baby-proofing, room makeover "
-        "or insurance-claim help. Last Mile Home also shops for you: products that fit, a cart within budget, "
-        "Stripe checkout and store links, or a claim package. No other agent needed."
+        "Send a home video: get a 3D model and elder-safety, baby-proofing, room makeover or insurance help. "
+        "Then it shops for you: furniture, safety gear and electronics like monitors that fit the space, in "
+        "one cart within budget, checked out with Stripe. No other agent needed."
     ),
 )
 
@@ -187,6 +187,9 @@ def child_months(text: str) -> int | None:
     return round(number * 12) if "year" in text.lower() else round(number)
 
 
+MENTIONS_MEDIA = re.compile(r"\b(video|photos?|pictures?|footage|clip|upload(ed)?|attach(ed|ment)?)\b", re.I)
+
+
 def has_answers(state: dict, mode: str) -> bool:
     answers = state.get("answers", {})
     return mode in REQUIRED and all(answers.get(k) not in (None, "") for k in REQUIRED[mode])
@@ -241,9 +244,15 @@ async def route(ctx: Context, sender: str, state: dict, files: list[dict], selec
         wanted = cards.MODES.get(state.get("wanted_mode", ""), {}).get("title")
         if wanted or action != "other":
             lead = f"Happy to do the {wanted.lower()} check. " if wanted else ""
-            await send(ctx, sender, text_message(
-                f"{lead}Please attach a 30-second video or a few photos of the home "
-                "(as a file, not a YouTube or web link) and I'll map it in 3D."))
+            if MENTIONS_MEDIA.search(text):
+                # Live: ASI:One's planner wrote "see uploaded video" but left the link out. Ask for the
+                # link itself, or the planner reads "no web links" as a dead end and shops elsewhere.
+                ask = ("Your video didn't come through with this message. Please send it again, as a file or "
+                       "the direct video link (e.g. the .mp4 link), and I'll map the home in 3D.")
+            else:
+                ask = ("Please attach a 30-second video or a few photos of the home, as a file or a direct "
+                       "video link (YouTube pages don't work), and I'll map it in 3D.")
+            await send(ctx, sender, text_message(lead + ask))
         else:
             await send(ctx, sender, text_message(GREETING))
     elif action == "choose_mode" and has_answers(state, selection.get("mode", "")):
@@ -498,8 +507,9 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict, int
         return
     next_step = ("Tap Build my claim package (or say \"build the package\") and I'll price each item at today's "
                  "replacement cost and build it myself." if mode == "claim" else
-                 "Pick the fixes and tap Find products (or say \"find products\"): I search real stores, build "
-                 "your cart and handle checkout myself.")
+                 "Pick the fixes and tap Find products (or say \"find products\"). I find everything myself, "
+                 "furniture, safety gear and electronics like monitors, build one cart within your budget and check "
+                 "it out with Stripe; no other agent is needed.")
     view = (f"\n\n**[Open the 3D view of your home]({result.viewer_url})**: every finding is pinned on its object; "
             "click one to see why it was flagged." if result.viewer_url else "")
     await show_results(ctx, sender, state, f"{intro} {result.summary}\n\n{findings_text(result)}\n\n{next_step}{view}".strip())

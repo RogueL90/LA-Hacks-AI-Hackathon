@@ -3,7 +3,17 @@
 
 # Home Product Finder
 
-Finds real products for any specialist mode. A quote is returned only after its page loads and the title or price shows up there.
+Finds real products online and checks every one: the store page has to load and show the product or its price before it's offered.
+
+## Ask it directly (ASI:One, Agentverse chat)
+
+- "Find two 27 inch monitors under $150 each, a wireless keyboard and mouse"
+- "Grab bars for a bathroom, one 18 in and two 24 in"
+- "A hardware-mounted baby gate for a 39 in wide stair"
+
+It splits the request into product searches, searches stores (Walmart, Target, Home Depot, Amazon, Wayfair and more), checks each page and price, and replies with a best pick and a backup per item, with links. For products that fit a measured room and one checkout for the whole cart, send a home video to **Last Mile Home**.
+
+## Inside Last Mile Home
 
 **In:** `FindProductsRequest`  
 **Out:** `FindProductsResult`
