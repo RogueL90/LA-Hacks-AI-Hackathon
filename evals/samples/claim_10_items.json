@@ -1,0 +1,121 @@
+{
+  "job_id": "job_claim_10",
+  "space_id": "space_demo",
+  "profile": {
+    "person": "Mom",
+    "zip_code": "90024",
+    "policy_type": "replacement_cost"
+  },
+  "findings": [
+    {
+      "id": "item_sofa",
+      "kind": "item",
+      "title": "Sofa",
+      "object_ids": ["obj_sofa_01"],
+      "value_usd": 800,
+      "value_basis": "estimate",
+      "fix_summary": "3-seat sofa in the living room",
+      "evidence": [{"frame_url": "https://example.com/frames/sofa.jpg", "note": "Living room"}],
+      "product_query": {"query": "sofa", "quantity": 1, "constraints": {"room": "Living room", "brand": "Article", "model": "Sven", "age_years": "6"}}
+    },
+    {
+      "id": "item_coffee_table",
+      "kind": "item",
+      "title": "Coffee table",
+      "object_ids": ["obj_coffee_table_01"],
+      "value_usd": 120,
+      "value_basis": "estimate",
+      "fix_summary": "Wood coffee table",
+      "evidence": [{"frame_url": "https://example.com/frames/coffee-table.jpg"}],
+      "product_query": {"query": "coffee table", "quantity": 1, "constraints": {"room": "Living room", "brand": "Ikea", "model": "Lack", "age_years": "4"}}
+    },
+    {
+      "id": "item_rug",
+      "kind": "item",
+      "title": "Area rug",
+      "object_ids": ["obj_rug_01"],
+      "value_usd": 90,
+      "value_basis": "measured",
+      "fix_summary": "5 by 7 area rug",
+      "evidence": [{"frame_url": "https://example.com/frames/rug.jpg"}],
+      "product_query": {"query": "area rug 5x7", "quantity": 1, "constraints": {"room": "Living room", "brand": "Ruggable", "model": "5x7", "age_years": "2"}}
+    },
+    {
+      "id": "item_floor_lamp",
+      "kind": "item",
+      "title": "Floor lamp",
+      "object_ids": ["obj_lamp_floor_01"],
+      "value_usd": 60,
+      "value_basis": "estimate",
+      "fix_summary": "Floor lamp by the sofa",
+      "evidence": [{"frame_url": "https://example.com/frames/floor-lamp.jpg"}],
+      "product_query": {"query": "floor lamp", "quantity": 1, "constraints": {"room": "Living room", "brand": "Target", "model": "Threshold", "age_years": "3"}}
+    },
+    {
+      "id": "item_tv",
+      "kind": "item",
+      "title": "Television",
+      "object_ids": ["obj_tv_01"],
+      "value_usd": 400,
+      "value_basis": "user_confirmed",
+      "fix_summary": "Living room television",
+      "evidence": [{"frame_url": "https://example.com/frames/tv.jpg"}],
+      "product_query": {"query": "television", "quantity": 1, "constraints": {"room": "Living room", "brand": "Samsung", "model": "43 in", "age_years": "5"}}
+    },
+    {
+      "id": "item_nightstand",
+      "kind": "item",
+      "title": "Nightstand",
+      "object_ids": ["obj_nightstand_01"],
+      "value_usd": 45,
+      "value_basis": "estimate",
+      "fix_summary": "Hallway nightstand",
+      "evidence": [{"frame_url": "https://example.com/frames/nightstand.jpg"}],
+      "product_query": {"query": "nightstand", "quantity": 1, "constraints": {"room": "Hallway", "brand": "Ikea", "model": "Hemnes", "age_years": "8"}}
+    },
+    {
+      "id": "item_table_lamp",
+      "kind": "item",
+      "title": "Table lamp",
+      "object_ids": ["obj_lamp_table_01"],
+      "value_usd": 25,
+      "value_basis": "estimate",
+      "fix_summary": "Lamp on the hallway nightstand",
+      "evidence": [{"frame_url": "https://example.com/frames/table-lamp.jpg"}],
+      "product_query": {"query": "table lamp", "quantity": 1, "constraints": {"room": "Hallway", "brand": "Target", "model": "Table lamp", "age_years": "3"}}
+    },
+    {
+      "id": "item_dresser",
+      "kind": "item",
+      "title": "Dresser",
+      "object_ids": ["obj_dresser_01"],
+      "value_usd": 350,
+      "value_basis": "receipt",
+      "fix_summary": "Bedroom dresser",
+      "evidence": [{"frame_url": "https://example.com/frames/dresser.jpg"}],
+      "product_query": {"query": "dresser", "quantity": 1, "constraints": {"room": "Bedroom", "brand": "West Elm", "model": "6-drawer", "age_years": "7"}}
+    },
+    {
+      "id": "item_bed",
+      "kind": "item",
+      "title": "Bed",
+      "object_ids": ["obj_bed_01"],
+      "value_usd": 700,
+      "value_basis": "estimate",
+      "fix_summary": "Queen bed",
+      "evidence": [{"frame_url": "https://example.com/frames/bed.jpg"}],
+      "product_query": {"query": "queen bed", "quantity": 1, "constraints": {"room": "Bedroom", "brand": "Article", "model": "Timber", "age_years": "6"}}
+    },
+    {
+      "id": "item_mirror",
+      "kind": "item",
+      "title": "Mirror",
+      "object_ids": ["obj_mirror_01"],
+      "value_usd": 80,
+      "value_basis": "estimate",
+      "fix_summary": "Bathroom mirror",
+      "evidence": [{"frame_url": "https://example.com/frames/mirror.jpg"}],
+      "product_query": {"query": "bathroom mirror", "quantity": 1, "constraints": {"room": "Bathroom", "brand": "Home Depot", "model": "24 in", "age_years": "9"}}
+    }
+  ]
+}

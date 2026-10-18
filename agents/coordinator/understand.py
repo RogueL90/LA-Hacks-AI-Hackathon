@@ -12,7 +12,7 @@ from shared import config
 
 MODEL = "asi1-mini"
 ACTIONS = ["choose_mode", "submit_intake", "finding_detail", "approve_plan", "decline_plan",
-           "check_payment", "payment_opened", "show_results", "show_modes", "other"]
+           "check_payment", "payment_opened", "link_opened", "show_results", "show_modes", "other"]
 MODES = ["elder", "baby", "transform", "claim"]
 
 _client = AsyncOpenAI(base_url="https://api.asi1.ai/v1", api_key=config.ASI_ONE_API_KEY, timeout=20)
@@ -20,7 +20,8 @@ _client = AsyncOpenAI(base_url="https://api.asi1.ai/v1", api_key=config.ASI_ONE_
 SYSTEM = """You read messages sent to Last Mile Home, a home-safety agent in ASI:One, and decide what the user wants.
 The flow: the user shares a video of a home -> picks a mode (elder = elder safety/fall risks, baby = baby-proofing,
 transform = repurpose a room such as a home office, claim = insurance claim inventory) -> fills in a short form ->
-sees findings and a fix plan -> approves it -> pays a service fee -> confirms payment.
+sees findings and a fix plan -> approves it -> sees a cart of products that fit -> pays a service fee -> confirms
+payment and gets the store links. In claim mode, after the inventory the user asks for the claim package instead.
 Messages may come from the user directly or from the ASI:One planner describing what the user clicked or typed.
 Use the last card shown to the user to resolve what a click or answer refers to.
 Messages can be in any language; answer with the same actions and English field values.
@@ -34,12 +35,16 @@ Field formats: mobility_aid is one of none/cane/walker/wheelchair; night_trips i
 replacement_cost/actual_cash_value/unknown; numbers as plain digits ("$1,200" -> "1200"); room_id is the room name.
 Actions:
 - choose_mode: user picks a mode, or asks for a mode's check/report/assessment without giving the form answers (set mode)
-- submit_intake: user answers the form questions (set mode and copy every answer into fields, as plain strings)
+- submit_intake: user answers the form questions (set mode and copy every answer into fields, as plain strings).
+  Only when the last card shown is a form or the message gives new answers: after results are shown, a message that
+  restates earlier answers and asks for products, recommendations, prices, a shopping list or to proceed is approve_plan
 - finding_detail: user asks about one specific finding (copy its exact finding_id from the card's on_click; never invent one)
-- approve_plan: user approves the fix plan, wants products, or wants to pay
+- approve_plan: user approves the fix plan, picks fixes, wants products or a cart, or wants to pay; in claim mode,
+  asks to price the items or build/download the claim package
 - decline_plan: user declines or cancels
 - check_payment: user says they paid or asks if the payment went through
 - payment_opened: user opened the checkout / tapped Pay but hasn't confirmed paying yet
+- link_opened: user opened a store link or a download link from a card
 - show_results: user wants to see the results again
 - show_modes: user wants the list of options or another mode without naming one
 - other: anything else (greetings, questions)
@@ -133,3 +138,48 @@ async def understand(text: str, last_card: dict | None) -> dict:
         selection["finding_id"] = result["finding_id"]
     selection.update({k: v for k, v in (result.get("fields") or {}).items() if v not in (None, "")})
     return selection
+
+
+# The model sometimes drops answers the message plainly states ("84-year-old ... uses a walker
+# ... gets up at night" came back as choose_mode with no fields), which sends the user back to
+# a form they already answered. These patterns fill only what's missing; the model wins otherwise.
+_PATTERNS = [
+    ("mobility_aid", r"\bwheel ?chairs?\b", "wheelchair"),
+    ("mobility_aid", r"\b(?:walker|rollator)s?\b", "walker"),
+    ("mobility_aid", r"\bcanes?\b", "cane"),
+    ("night_trips", r"\bsleeps? through the night\b|\bno (?:night|nighttime) trips\b", "false"),
+    ("night_trips", r"\b(?:up|gets? up|wakes? up|trips?|walks?|bathroom)\b[^.]{0,40}\b(?:at|during the) night\b|\bnight(?:time)? (?:trips?|bathroom)", "true"),
+    ("policy_type", r"\breplacement[- ]cost\b", "replacement_cost"),
+    ("policy_type", r"\bactual[- ]cash[- ]value\b|\bACV\b", "actual_cash_value"),
+]
+
+
+def fill_missing(text: str, selection: dict) -> dict:
+    """Copy answers the text clearly states into fields the model left empty."""
+    import re
+
+    out = dict(selection)
+    for field, pattern, value in _PATTERNS:
+        if not out.get(field) and re.search(pattern, text, re.I):
+            out[field] = value
+    if not out.get("budget_usd"):
+        m = re.search(r"budget[^\d$]{0,20}\$?\s?(\d[\d,]*)|\$\s?(\d[\d,]*)\s*budget", text, re.I)
+        if m:
+            out["budget_usd"] = (m.group(1) or m.group(2)).replace(",", "")
+    if not out.get("zip_code"):
+        m = re.search(r"\b(?:zip|postal)(?: code)?\D{0,10}(\d{5})\b", text, re.I)
+        if m:
+            out["zip_code"] = m.group(1)
+    child = re.search(r"\b(toddler|baby|infant|child|kid|son|daughter|newborn)\b", text, re.I)
+    if child and not out.get("child_age_months"):
+        m = re.search(r"\b(\d{1,2})[- ]?(?:months?|mos?)\b", text, re.I)
+        y = re.search(r"\b(\d)[- ]?(?:years?|yrs?)[- ]?old\b", text, re.I)
+        if m:
+            out["child_age_months"] = m.group(1)
+        elif y:
+            out["child_age_months"] = str(int(y.group(1)) * 12)
+    if not child and not out.get("age"):
+        m = re.search(r"\b(\d{2,3})[- ]?(?:years?|yrs?)[- ]?old\b|\b(?:is|aged?|she's|he's) (\d{2,3})\b", text, re.I)
+        if m and 40 <= int(m.group(1) or m.group(2)) <= 120:
+            out["age"] = m.group(1) or m.group(2)
+    return out

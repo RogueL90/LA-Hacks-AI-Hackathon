@@ -3,7 +3,7 @@
 Values come from the Product Finder (current replacement price) or the user; until then
 each item is listed with value_usd=None rather than an invented number.
 """
-from agents.specialists.geometry import evidence_for, pin
+from agents.specialists.geometry import M_TO_IN, evidence_for, pin
 from shared.models import Finding, Overlay, ProductQuery, Profile, Space
 
 # Fixtures and building parts belong to the dwelling claim, not contents.
@@ -22,11 +22,17 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
             continue
         brand = o.attributes.get("brand_guess") or ""
         guess = o.attributes.get("model_guess") or (f"{brand} {o.label}".strip() if brand.lower() not in o.label.lower() else o.label)
+        if o.type == "tv" and not o.attributes.get("model_guess"):
+            # "wall mounted TV" finds TV mounts; price the set itself by its measured size (16:9 width -> diagonal).
+            guess = f"{brand} {round(o.size[0] * M_TO_IN / 0.87)} inch TV".strip()
         f = Finding(
             id=f"claim_{o.id}", kind="item", title=o.label,
             object_ids=[o.id],
             fix_summary=f"{rooms.get(o.room_id, o.room_id)} · priced as: {guess}",
-            product_query=ProductQuery(query=f"{guess} replacement price"),
+            # room/brand/model ride along for the Insurance Claim Filer's spreadsheet (search ignores them).
+            product_query=ProductQuery(query=f"{guess} replacement price", constraints={
+                k: v for k, v in (("room", rooms.get(o.room_id, o.room_id)), ("brand", brand),
+                                  ("model", o.attributes.get("model_guess"))) if v}),
             value_basis="estimate",
             evidence=evidence_for(o, f"Seen in the {rooms.get(o.room_id, o.room_id).lower()}"),
         )

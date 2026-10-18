@@ -6,6 +6,7 @@ the final answer, and saves the conversation so the next turn can continue it.
 """
 import argparse
 import json
+import time
 import uuid
 from pathlib import Path
 
@@ -25,6 +26,15 @@ def merge(into: dict, update: dict):
             into[k] = v
 
 
+def _has_reply(plan: dict) -> bool:
+    """The agent's card or payment request has arrived in the plan."""
+    for phase in plan.get("phases", {}).values():
+        for task in phase.get("tasks", {}).values():
+            if task.get("agent_card_response") or task.get("payment_request") or task.get("agent_response"):
+                return True
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("message")
@@ -40,8 +50,13 @@ def main():
     plan: dict = {}
     answer = []
     seen_lines = set()
+    # Once the plan waits on the user (a card to tap, a payment to make) ASI:One keeps the stream
+    # open until they act, so stop reading there: that's the end of this turn.
+    waiting = {"card_interaction_requested", "payment_requested"}
+    t_start = time.monotonic()
+    print(f"  [sent] {time.strftime('%H:%M:%S')}", flush=True)
     with httpx.stream("POST", "https://api.asi1.ai/v1/chat/completions", json=body, headers=headers, timeout=600) as r:
-        print(f"HTTP {r.status_code}  session={session}")
+        print(f"HTTP {r.status_code}  session={session}", flush=True)
         for line in r.iter_lines():
             if not line.startswith("data:"):
                 continue
@@ -56,7 +71,12 @@ def main():
                 key = f"status:{status}"
                 if key not in seen_lines:
                     seen_lines.add(key)
-                    print(f"  [plan] {status}")
+                    print(f"  [plan] +{time.monotonic() - t_start:.1f}s {status}", flush=True)
+                if _has_reply(plan) and "reply" not in seen_lines:
+                    seen_lines.add("reply")
+                    print(f"  [plan] +{time.monotonic() - t_start:.1f}s our agent's reply is in the plan", flush=True)
+                if status in waiting and _has_reply(plan):
+                    break
             for choice in chunk.get("choices", []):
                 delta = choice.get("delta", {}).get("content")
                 if delta:

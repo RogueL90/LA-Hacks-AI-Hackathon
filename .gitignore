@@ -6,3 +6,6 @@ __pycache__/
 *.log
 *_data.json
 logs/
+agents/actions/product_finder/cache/*.json
+agents/actions/insurance_filer/out/*
+!agents/actions/insurance_filer/out/.gitkeep

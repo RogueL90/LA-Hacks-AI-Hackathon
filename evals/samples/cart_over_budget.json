@@ -1,0 +1,33 @@
+{
+  "job_id": "job_cart_over_budget",
+  "budget_usd": 50,
+  "quotes": [
+    {
+      "title": "18 in grab bar",
+      "url": "https://example.com/grab-bar",
+      "merchant": "example",
+      "price_usd": 40,
+      "url_verified": true,
+      "finding_id": "grab_bar",
+      "specs": {"quantity": 1, "role": "primary", "query": "18 in bathroom grab bar"}
+    },
+    {
+      "title": "Plug-in night lights",
+      "url": "https://example.com/night-lights",
+      "merchant": "example",
+      "price_usd": 8,
+      "url_verified": true,
+      "finding_id": "night_lights",
+      "specs": {"quantity": 4, "role": "primary", "query": "plug-in night light"}
+    },
+    {
+      "title": "Rug gripper",
+      "url": "https://example.com/rug-gripper",
+      "merchant": "example",
+      "price_usd": 30,
+      "url_verified": true,
+      "finding_id": "rug_gripper",
+      "specs": {"quantity": 1, "role": "primary", "query": "adhesive non-slip rug gripper 5x7"}
+    }
+  ]
+}

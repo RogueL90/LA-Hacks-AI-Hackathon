@@ -11,7 +11,7 @@ from shared import config  # noqa: F401  (loads .env)
 
 SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "").strip()
-FEE_USD = os.getenv("SERVICE_FEE_USD", "4.99")
+FEE_USD = os.getenv("SERVICE_FEE_USD", "1.00")  # fallback only: the Cart agent sets each plan's fee
 RETURN_URL = os.getenv("STRIPE_SUCCESS_URL", "https://agentverse.ai/payment-success")
 PRODUCT = "Last Mile Home fix plan"
 
@@ -25,18 +25,22 @@ def _client() -> stripe.StripeClient:
     return stripe.StripeClient(SECRET_KEY)
 
 
-def _line_items(description: str) -> list[dict]:
+def _cents(amount_usd: str | float) -> int:
+    return round(float(amount_usd) * 100)
+
+
+def _line_items(description: str, amount_usd: str) -> list[dict]:
     return [{
         "price_data": {
             "currency": "usd",
             "product_data": {"name": PRODUCT, "description": description},
-            "unit_amount": round(float(FEE_USD) * 100),
+            "unit_amount": _cents(amount_usd),
         },
         "quantity": 1,
     }]
 
 
-def _create(reference: str, description: str) -> dict:
+def _create(reference: str, description: str, amount_usd: str) -> dict:
     client = _client()
     expires_at = int(time.time()) + 1800  # Stripe's minimum is 30 minutes
     metadata = {"reference": reference, "service": "last_mile_home"}
@@ -46,14 +50,14 @@ def _create(reference: str, description: str) -> dict:
         "mode": "payment",
         "return_url": f"{RETURN_URL}?session_id={{CHECKOUT_SESSION_ID}}",
         "expires_at": expires_at,
-        "line_items": _line_items(description),
+        "line_items": _line_items(description, amount_usd),
         "metadata": metadata,
     })
     hosted = client.v1.checkout.sessions.create(params={
         "mode": "payment",
         "success_url": f"{RETURN_URL}?session_id={{CHECKOUT_SESSION_ID}}",
         "expires_at": expires_at,
-        "line_items": _line_items(description),
+        "line_items": _line_items(description, amount_usd),
         "metadata": metadata,
     })
     return {
@@ -64,7 +68,7 @@ def _create(reference: str, description: str) -> dict:
             "client_secret": embedded.client_secret,
             "checkout_session_id": embedded.id,
             "currency": "usd",
-            "amount_cents": str(round(float(FEE_USD) * 100)),
+            "amount_cents": str(_cents(amount_usd)),
         },
         "embedded_id": embedded.id,
         "hosted_id": hosted.id,
@@ -79,8 +83,8 @@ def _paid(session_id: str, expected_usd: float | None) -> bool:
     return expected_usd is None or session.amount_total == round(expected_usd * 100)
 
 
-async def create_checkout(reference: str, description: str) -> dict:
-    return await asyncio.to_thread(_create, reference, description)
+async def create_checkout(reference: str, description: str, amount_usd: str = FEE_USD) -> dict:
+    return await asyncio.to_thread(_create, reference, description, amount_usd)
 
 
 async def is_paid(session_id: str, expected_usd: float | None = None) -> bool:

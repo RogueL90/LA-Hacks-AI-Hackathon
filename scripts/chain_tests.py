@@ -11,6 +11,7 @@ and would swallow messages meant for the live agents.
 """
 import asyncio
 import json
+import os
 import secrets
 import sys
 import time
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from shared import config
+from shared import config, uagents_patch
 from uagents import Agent, Bureau, Context, Protocol
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
@@ -42,9 +43,10 @@ from uagents_core.contrib.protocols.payment import (
 ADDR = json.loads((config.ROOT / "shared" / "addresses.json").read_text())
 COORD = ADDR["coordinator"]
 PORT = 8298
-VIDEO = "https://res.cloudinary.com/fetch-ai/video/upload/v1792289759/chat-images/ttxwol79hg5looafhcif.mov"
-PHOTOS = [f"https://res.cloudinary.com/fetch-ai/video/upload/so_{p}p,w_800/v1792289759/chat-images/ttxwol79hg5looafhcif.jpg"
-          for p in (15, 45, 75)]
+# A 32 s walkthrough of a two-floor home (12 rooms), served by the local Space Service.
+# (The ASI:One test clip used before shows one room and a face, which can't exercise the checks.)
+VIDEO = os.getenv("CHAIN_VIDEO", "http://127.0.0.1:8300/files/media/394e1fd9945b.mp4")
+PHOTOS = [f"http://127.0.0.1:8300/files/media/{name}.jpg" for name in ("8f97ba84e891", "94694eb03dfb", "e382c96aa08f")]
 
 
 @dataclass
@@ -170,16 +172,18 @@ CASES = {
         (chat("And list everything for insurance, replacement cost, ZIP 10001."),
          lambda r: (r.title().startswith("Insurance claim"), "claim inventory, same home")),
     ]),
-    12: ("Pick fixes, pay link, forged and unpaid payments", {"elder"}, [
+    12: ("Pick fixes -> products -> cart -> pay link; forged and unpaid payments", {"elder", "product_finder", "cart"}, [
         (chat("Fall check for my dad: 79, walker, up at night.", [VIDEO], start=True),
          lambda r: (len(r.picker()) > 0, "results with fix picker")),
         (lambda prev: tap(action="approve_plan", fix_ids=prev.picker()[:2]),
-         lambda r: ("RequestPayment" in r.payments and r.card("custom") is not None
-                    and "redirect" in json.dumps(r.cards), "Stripe request + Pay button with checkout link")),
+         lambda r: ("RequestPayment" in r.payments and r.title().startswith("Your cart")
+                    and "checkout.stripe.com" in json.dumps(r.cards), "products found -> cart + Stripe fee request")),
         ("commit:cs_test_forged_session_123", lambda r: ("CancelPayment" in r.payments, "forged session refused")),
         ("commit:REAL", lambda r: ("CancelPayment" in r.payments, "real but unpaid session refused")),
         (tap(action="check_payment"), lambda r: ("don't see the payment" in r.text.lower(), "I've paid without paying is caught")),
         (tap(action="show_results"), lambda r: (r.title().startswith("Elder safety"), "results can be reopened")),
+        (tap(action="approve_plan"), lambda r: (r.title().startswith("Your cart") and "RequestPayment" not in r.payments,
+                                                "approve again shows the same cart without a new search or charge")),
     ]),
     13: ("Hazard details and navigation", {"baby"}, [
         (chat("Baby check, she's 9 months.", [VIDEO], start=True), lambda r: (len(r.picker()) > 0, "baby results")),
@@ -188,6 +192,27 @@ CASES = {
         (tap(action="show_modes"), lambda r: (r.card("carousel") is not None, "back to the mode menu")),
     ]),
 }
+_seen: dict = {}  # case 15: whether the package came straight back or arrives later
+
+CASES.update({
+    15: ("Claim: inventory -> prices -> claim package", {"claim", "product_finder", "insurance_filer"}, [
+        (chat("Water damage claim. Replacement cost policy, ZIP 90024. Inventory everything.", [VIDEO], start=True),
+         lambda r: (r.title().startswith("Insurance claim"), "claim inventory")),
+        (tap(action="approve_plan"),
+         lambda r: (_seen.__setitem__("pkg", r.title().startswith("Claim package")) or
+                    ((_seen["pkg"] or "pricing" in r.text.lower()) and not r.payments), "package (or pricing note), no fee")),
+        ("wait", lambda r: (_seen["pkg"] or (r.title().startswith("Claim package") and "redirect" in json.dumps(r.cards)),
+                            "claim package card with download links")),
+        (chat("Can I get the claim package again?"), lambda r: (r.title().startswith("Claim package"), "package can be reopened")),
+    ]),
+    16: ("Transformer: shop for the new room within budget", {"transformer", "product_finder", "cart"}, [
+        (chat("Turn the bedroom into a home office, modern, budget $600.", [VIDEO], start=True),
+         lambda r: (r.title().startswith("Space transformer"), "transformer plan")),
+        (lambda prev: tap(action="approve_plan", fix_ids=prev.picker()),
+         lambda r: ((r.title().startswith("Your cart") and "RequestPayment" in r.payments)
+                    or "couldn't confirm a product page" in r.text, "cart with fee, or an honest no-result")),
+    ]),
+})
 # 14: three users at once, each in a different mode (concurrency + isolation).
 PARALLEL = {
     14: [("Parallel elder", "elder", "Fall check, she's 85 with a walker.", lambda r: r.title().startswith("Elder safety")),
@@ -270,8 +295,10 @@ def make_user(name: str, steps: list, delay: float = 30) -> Agent:
                 if isinstance(message, str) and message.startswith("commit:"):
                     tx = message.split(":", 1)[1]
                     tx = (stripe_session or "missing") if tx == "REAL" else tx
-                    await ctx.send(COORD, CommitPayment(funds=Funds(currency="USD", amount="4.99", payment_method="stripe"),
+                    await ctx.send(COORD, CommitPayment(funds=Funds(currency="USD", amount="1.00", payment_method="stripe"),
                                                         recipient=COORD, transaction_id=tx))
+                elif message == "wait":
+                    pass  # nothing to send: the reply to the previous step arrives later
                 else:
                     try:
                         outgoing = message(prev) if callable(message) else message
@@ -303,13 +330,13 @@ def main():
             title, expected, steps = CASES[n]
             key = f"{n:02d} {title}"
             EXPECTED[key] = expected
-            users.append(make_user(key, steps, delay=30 + 2 * len(users)))
+            users.append(make_user(key, steps, delay=30 + 8 * len(users)))  # ~4 builds at a time, not 16
         for name, mode, text, ok in PARALLEL.get(n, []):
             key = f"{n:02d} {name}"
             EXPECTED[key] = {mode}
             users.append(make_user(key, [(chat(text, [VIDEO], start=True),
                                           lambda r, ok=ok, mode=mode: (ok(r), f"{mode} results"))],
-                                   delay=30 + 2 * len(CASES)))  # the three parallel users start together
+                                   delay=30 + 8 * len(CASES)))  # the three parallel users start together
     started = time.strftime("%H:%M:%S")
     bureau = Bureau(port=PORT, endpoint=[f"http://127.0.0.1:{PORT}/submit"])
     for u in users:
@@ -335,4 +362,5 @@ def main():
 
 
 if __name__ == "__main__":
+    uagents_patch.apply()
     main()

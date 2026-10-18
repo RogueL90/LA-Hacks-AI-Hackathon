@@ -185,15 +185,15 @@ class CartResult(Model):
     subtotal_usd: float = 0.0
     within_budget: bool = True
     checkout_links: list[str] = []        # merchant handoff — NOT a placed order (label it)
-    service_fee_usd: float = 0.0          # what the Coordinator will charge via Payment Protocol (Stripe)
+    service_fee_usd: str = "0"            # "1.00": what the Coordinator charges via the Payment Protocol (Stripe)
     error: Optional[str] = None
 
 
 class VerifyPaymentRequest(Model):
     job_id: str
-    transaction_id: str                   # Stripe Checkout Session id ("cs_test_...")
-    expected_amount_usd: float
-    payment_method: str = "stripe"
+    service_fee_usd: str                  # "1.00", from CartResult.service_fee_usd
+    transaction_id: Optional[str] = None  # Stripe Checkout Session the user paid in ASI:One ("cs_test_...");
+                                          # without one, the verifier charges Stripe's test card itself
     trace: TraceCtx = TraceCtx()
 
 

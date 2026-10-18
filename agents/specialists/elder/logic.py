@@ -149,7 +149,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 title="No night lighting between bedroom and bathroom",
                 object_ids=[o.id for o in path_lights],
                 fix_summary="Add plug-in motion-sensor night lights along the path (CDC STEADI)",
-                product_query=ProductQuery(query="plug-in motion sensor LED night light", quantity=3),
+                product_query=ProductQuery(query="plug-in motion sensor LED night light 3 pack"),
                 evidence=evidence_for(path_lights[0], "No night light seen on the path") if path_lights
                 else [Evidence(note="No night light seen on the path")],
             ), path_lights[0].position if path_lights else None)

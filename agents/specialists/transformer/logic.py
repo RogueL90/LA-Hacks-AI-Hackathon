@@ -125,13 +125,13 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
         constraints = {}
         if max_w is not None:
             fit_w = min(max_w, best["free"] - WALKWAY_M / 3)
-            constraints["max_width_in"] = inches(fit_w)
+            constraints["width_in"] = inches(fit_w)  # Product Finder reads numbers as maximums
             query = f"{query} under {inches(fit_w)} in wide"
         if profile.style:
             query = f"{profile.style} {query}"
         findings.append(Finding(
             id=f"transform_item_{i}", kind="suggestion", title=f"Add: {title}",
-            fix_summary=(f"Must be at most {constraints['max_width_in']} in wide to fit"
+            fix_summary=(f"Must be at most {constraints['width_in']} in wide to fit"
                          if constraints else "Fits anywhere in the plan"),
             product_query=ProductQuery(query=query, max_price_usd=profile.budget_usd, constraints=constraints),
         ))

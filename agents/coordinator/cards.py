@@ -1,5 +1,5 @@
 """Interactive Card payloads for the Coordinator (ASI:One card protocol v1)."""
-from shared.models import Finding, ModeResult
+from shared.models import CartResult, ClaimPackage, Finding, ModeResult, ProductQuote
 
 MODES = {
     "elder": {
@@ -126,10 +126,10 @@ def _severity_badge(f: Finding) -> dict:
     return {"label": label, "variant": variant}
 
 
-def _buttons(fee_label: str | None, approve: str = "Approve plan") -> dict:
+def _buttons(fee_label: str | None, approve: str = "Find products") -> dict:
     buttons = []
     if fee_label:
-        buttons.append({"type": "button", "label": f"{approve} · {fee_label.split(' ')[0]}", "primary": True,
+        buttons.append({"type": "button", "label": approve, "primary": True,
                         "action": {"selection": {"action": "approve_plan"}}})
     buttons.append({"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}})
     return {"type": "group", "direction": "row", "gap": 8, "children": buttons}
@@ -169,8 +169,8 @@ def _hazard_results(result: ModeResult, image: str, fee_label: str | None) -> di
     picker = _picker("fix_ids", "Pick the fixes you want", fixes,
                      lambda f: f"{f.fix_summary.split(' (')[0].split(', which')[0]} ({SEVERITY.get(f.severity, ('Moderate',))[0].lower()})"
                      ) if fee_label else []
-    footer = [{"type": "text", "value": f"I'll find products that fit your measurements, with checkout links. Service fee {fee_label}.",
-               "style": "muted"}] if fee_label else []
+    footer = [{"type": "text", "value": f"I'll search real stores for products that fit your measurements and show you a cart. "
+                                        f"Service fee {fee_label}, only if I find something.", "style": "muted"}] if fee_label else []
     return {"root": {
         "type": "section",
         "title": f"{MODES[result.mode]['title']} · {len(hazards)} hazard{'s' if len(hazards) != 1 else ''}",
@@ -209,8 +209,8 @@ def _transform_results(result: ModeResult, image: str, fee_label: str | None) ->
                                   {"type": "text", "value": f.fix_summary or "", "style": "emphasis"},
                                   {"type": "badge", "label": "Add", "variant": "success"}]})
     picker = _picker("fix_ids", "What should I shop for?", adds, lambda f: f.title.replace("Add: ", "")) if fee_label else []
-    footer = [{"type": "text", "value": f"I'll find real products that fit these sizes, with checkout links. Service fee {fee_label}.",
-               "style": "muted"}] if fee_label else []
+    footer = [{"type": "text", "value": f"I'll search real stores for products that fit these sizes and show you a cart. "
+                                        f"Service fee {fee_label}, only if I find something.", "style": "muted"}] if fee_label else []
     return {"root": {
         "type": "section",
         "title": "Space transformer",
@@ -245,7 +245,11 @@ def _claim_results(result: ModeResult, image: str) -> dict:
             {"type": "divider"},
             {"type": "text", "value": "Next: today's replacement price for each item, then your claim package (spreadsheet and cover letter).",
              "style": "muted"},
-            _buttons(None),
+            {"type": "group", "direction": "row", "gap": 8, "children": [
+                {"type": "button", "label": "Build my claim package", "primary": True,
+                 "action": {"selection": {"action": "approve_plan"}}},
+                {"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}},
+            ]},
         ],
     }}
 
@@ -280,13 +284,64 @@ def finding_detail(f: Finding, image: str) -> dict:
     }
 
 
+def _money(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def _quote_row(q: ProductQuote, link: bool) -> dict:
+    qty = int((q.specs or {}).get("quantity", 1) or 1)
+    price = f"{_money(q.price_usd)}" + (f" × {qty}" if qty > 1 else "")
+    children = [
+        {"type": "heading", "value": q.title, "level": 3},
+        {"type": "text", "value": f"{price} · {q.merchant}", "style": "emphasis"},
+    ]
+    if q.fit_note:
+        children.append({"type": "text", "value": q.fit_note.split(". ", 1)[-1], "style": "muted"})
+    if (q.specs or {}).get("role") == "backup":
+        children.append({"type": "badge", "label": "Backup pick", "variant": "info"})
+    if link:
+        children.append({"type": "button", "label": f"Open at {q.merchant}",
+                         "action": {"selection": {"action": "link_opened"}, "redirect": q.url}})
+    return {"children": children}
+
+
+def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_url: str) -> dict:
+    """The products found for the chosen fixes, then the service fee (store links come after paying)."""
+    if budget is None:
+        budget_badge = {"type": "badge", "label": "No budget set", "variant": "info"}
+    elif cart.within_budget:
+        budget_badge = {"type": "badge", "label": f"Within your {_money(budget)} budget", "variant": "success"}
+    else:
+        budget_badge = {"type": "badge", "label": f"Over your {_money(budget)} budget", "variant": "warning"}
+    return {"root": {
+        "type": "section",
+        "title": f"Your cart · {len(cart.items)} product{'s' if len(cart.items) != 1 else ''}",
+        "subtitle": f"Subtotal {_money(cart.subtotal_usd)}, most important fixes first",
+        "children": [
+            {"type": "group", "direction": "row", "gap": 6, "children": [
+                budget_badge, {"type": "badge", "label": "Store pages checked", "variant": "success"}]},
+            {"type": "list", "items": [_quote_row(q, link=False) for q in cart.items[:10]]},
+            {"type": "divider"},
+            {"type": "text", "value": f"Pay the {fee_label} service fee to get the store link for every item. "
+                                      "You buy on each store's site: this is a handoff, not an order."},
+            {"type": "text", "value": "Stripe test mode · test card 4242 4242 4242 4242 · any future date · any CVC",
+             "style": "muted"},
+            {"type": "group", "direction": "row", "gap": 8, "children": [
+                {"type": "button", "label": f"Pay {fee_label} securely", "primary": True,
+                 "action": {"selection": {"action": "payment_opened"}, "redirect": checkout_url}},
+                {"type": "button", "label": "I've paid", "action": {"selection": {"action": "check_payment"}}},
+            ]},
+        ],
+    }}
+
+
 def payment_card(fee_label: str, checkout_url: str) -> dict:
     return {"root": {
         "type": "section",
         "title": "One step left",
         "subtitle": f"Service fee {fee_label}",
         "children": [
-            {"type": "text", "value": "You'll get products that fit your measured space, with checkout links for each one."},
+            {"type": "text", "value": "Pay the service fee to get the store link for every product in your cart."},
             {"type": "group", "direction": "row", "gap": 6, "children": [
                 {"type": "badge", "label": "Secure Stripe checkout", "variant": "success"},
                 {"type": "badge", "label": "Test mode", "variant": "info"},
@@ -301,15 +356,60 @@ def payment_card(fee_label: str, checkout_url: str) -> dict:
     }}
 
 
-def receipt_card(amount: str, reference: str) -> dict:
+def receipt_card(amount: str, reference: str, cart: CartResult | None = None) -> dict:
+    items = cart.items if cart else []
+    children = [
+        {"type": "group", "direction": "row", "gap": 6, "children": [
+            {"type": "badge", "label": "Paid", "variant": "success"},
+            {"type": "badge", "label": "Stripe test mode, not a real charge", "variant": "info"}]},
+        {"type": "text", "value": f"Reference {reference}", "style": "muted"},
+    ]
+    if items:
+        children += [
+            {"type": "heading", "value": "Your store links", "level": 3},
+            {"type": "list", "items": [_quote_row(q, link=True) for q in items[:10]]},
+            {"type": "text", "value": "These links open each store's product page. Nothing has been ordered for you.",
+             "style": "muted"},
+        ]
+    children.append({"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}})
     return {"root": {
         "type": "section",
         "title": "Payment received",
-        "subtitle": f"{amount} · Stripe test mode",
-        "children": [
-            {"type": "badge", "label": "Paid", "variant": "success"},
-            {"type": "text", "value": f"Reference {reference}", "style": "muted"},
-            {"type": "text", "value": "Next I'll find products that fit your measurements and prepare checkout links."},
-            {"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}},
-        ],
+        "subtitle": f"{amount} service fee" + (f" · subtotal {_money(cart.subtotal_usd)} at the stores" if items else ""),
+        "children": children,
+    }}
+
+
+def claim_package_card(pkg: ClaimPackage, priced: list[Finding], unpriced: int, image: str) -> dict:
+    top = sorted(priced, key=lambda f: -(f.value_usd or 0))[:6]
+    rows = [{"children": [
+        {"type": "heading", "value": f.title, "level": 3},
+        {"type": "text", "value": f"{_money(f.value_usd or 0)} · {(f.fix_summary or '').split(' · ')[0]}", "style": "emphasis"},
+    ]} for f in top]
+    downloads = [(label, url) for label, url in (("Inventory (Excel)", pkg.inventory_xlsx_url),
+                                                 ("Inventory (CSV)", pkg.inventory_csv_url),
+                                                 ("Cover letter (PDF)", pkg.letter_pdf_url)) if url]
+    children = [
+        {"type": "image", "src": image, "alt": "Frame from your video", "aspect_ratio": "16:9"},
+        {"type": "group", "direction": "row", "gap": 6, "children": [
+            {"type": "badge", "label": f"{pkg.item_count} items", "variant": "info"},
+            {"type": "badge", "label": f"{len(priced)} priced", "variant": "success"},
+            *([{"type": "badge", "label": f"{unpriced} to price by hand", "variant": "warning"}] if unpriced else []),
+        ]},
+        {"type": "heading", "value": "Highest-value items", "level": 3},
+        {"type": "list", "items": rows},
+        {"type": "divider"},
+        {"type": "text", "value": "Ready to send to your insurer. Nothing has been filed for you.", "style": "muted"},
+    ]
+    if downloads:
+        children.append({"type": "group", "direction": "row", "gap": 8, "children": [
+            {"type": "button", "label": label, "primary": i == 0,
+             "action": {"selection": {"action": "link_opened"}, "redirect": url}}
+            for i, (label, url) in enumerate(downloads)]})
+    children.append({"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}})
+    return {"root": {
+        "type": "section",
+        "title": f"Claim package · {_money(pkg.total_usd)}",
+        "subtitle": "Today's replacement cost for each item, with the frame it was seen in",
+        "children": children,
     }}

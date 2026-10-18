@@ -31,7 +31,7 @@ from uagents_core.contrib.protocols.payment import (
 )
 
 from agents.coordinator import cards
-from agents.coordinator.understand import understand
+from agents.coordinator.understand import fill_missing, understand
 from agents.specialists.baby.logic import analyze as baby_analyze
 from agents.specialists.claim.logic import analyze as claim_analyze
 from agents.specialists.elder.logic import analyze as elder_analyze
@@ -46,9 +46,20 @@ from shared.chat import (
     video_frame_at,
 )
 from shared.demo_space import demo_space
+from agents.actions.cart.logic import build_cart
+from agents.actions.insurance_filer.package import build_claim_package as local_build_claim_package
+from agents.actions.product_finder.search import find_products as local_find_products
 from shared.models import (
+    CartRequest,
+    CartResult,
+    ClaimPackage,
+    ClaimRequest,
+    FindProductsRequest,
+    FindProductsResult,
+    Finding,
     ModeRequest,
     ModeResult,
+    ProductQuery,
     Profile,
     Space,
     SpaceBuildRequest,
@@ -57,6 +68,7 @@ from shared.models import (
     VerifyPaymentResult,
 )
 from shared import stripe_pay
+from shared.payments import FLAT_SERVICE_FEE_USD, format_service_fee_usd
 from shared.space_client import get_space
 
 ADDRESSES = json.loads((config.ROOT / "shared" / "addresses.json").read_text())
@@ -111,6 +123,7 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     await ctx.send(sender, ChatAcknowledgement(timestamp=msg.timestamp, acknowledged_msg_id=msg.msg_id))
     # The planner marks every relayed message as a session start, so state is never wiped here;
     # a new conversation gets a new session id and therefore fresh state.
+    t_in = time.monotonic()
     starting = any(isinstance(c, StartSessionContent) for c in msg.content)
     state = load(ctx, sender)
     text = clean_text(msg)
@@ -118,8 +131,9 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     files = [f for f in attachments(msg) if f["url"] not in state.get("media", [])]
     selection = parse_selection(text)
     if not selection and text:
-        selection = await understand(text, state.get("last_card"))
-    ctx.logger.info(f"from={sender[:16]}… session={ctx.session} text={text[:200]!r} files={len(files)} selection={selection}")
+        selection = fill_missing(text, await understand(text, state.get("last_card")))
+    ctx.logger.info(f"{_now()} from={sender[:16]}… session={ctx.session} text={text[:200]!r} files={len(files)} "
+                    f"selection={selection} (understood in {time.monotonic() - t_in:.1f} s)")
 
     if starting and not state:
         # Tells ASI:One this agent accepts uploads, so the user can attach a video or photos.
@@ -127,13 +141,18 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
             timestamp=msg.timestamp, msg_id=uuid4(),
             content=[MetadataContent(type="metadata", metadata={"attachments": "true"})]))
     try:
-        await route(ctx, sender, state, files, selection)
+        await route(ctx, sender, state, files, selection, text)
     except Exception:
         # Never leave the user without a reply: the planner would otherwise wait and give up.
         ctx.logger.exception(f"session={ctx.session} handler failed")
         await send(ctx, sender, text_message(
             "Sorry, something went wrong on my side while handling that. I've logged it; please try again."))
     save(ctx, sender, state)
+    ctx.logger.info(f"{_now()} session={ctx.session} handled in {time.monotonic() - t_in:.1f} s")
+
+
+def _now() -> str:
+    return time.strftime("%H:%M:%S")
 
 
 ANSWER_KEYS = ["person", "age", "mobility_aid", "night_trips", "child_age_months", "goal", "room_id",
@@ -160,8 +179,28 @@ def has_answers(state: dict, mode: str) -> bool:
     return mode in REQUIRED and all(answers.get(k) not in (None, "") for k in REQUIRED[mode])
 
 
-async def route(ctx: Context, sender: str, state: dict, files: list[dict], selection: dict):
+SHOP_WORDS = re.compile(r"\b(products?|buy|shop(ping)?|cart|recommend\w*|purchase|prices?|order|proceed|approve\w*|"
+                        r"go ahead|links?|checkout|pay)\b", re.I)
+
+
+def repeats_answers(state: dict, selection: dict) -> bool:
+    """The planner restates earlier answers in every relayed message. Same mode as the shown results
+    and nothing new in the answers means this isn't a new intake."""
+    result = state.get("result") or {}
+    mode = selection.get("mode")
+    if not result or mode != result.get("mode"):
+        return False
+    known = state.get("answers", {})
+    given = {k: v for k, v in selection.items() if k in MODE_KEYS.get(mode, set())}
+    return all(str(known.get(k, "")).strip().lower() == str(v).strip().lower() for k, v in given.items())
+
+
+async def route(ctx: Context, sender: str, state: dict, files: list[dict], selection: dict, text: str = ""):
     merge_build(ctx, sender, state)
+    if selection.get("action") in ("submit_intake", "choose_mode") and not files and repeats_answers(state, selection):
+        # e.g. "Following up on the assessment... Dad is 84, uses a walker... recommend products within $300".
+        selection = {**selection, "action": "approve_plan" if SHOP_WORDS.search(text) else "show_results"}
+        ctx.logger.info(f"repeat of earlier answers -> {selection['action']}")
     action = selection.get("action")
     mode = selection.get("mode")
     if mode == "baby" and not selection.get("child_age_months") and selection.get("age"):
@@ -197,12 +236,20 @@ async def route(ctx: Context, sender: str, state: dict, files: list[dict], selec
         await on_intake(ctx, sender, state, selection)
     elif action == "finding_detail":
         await on_finding_detail(ctx, sender, state, selection.get("finding_id", ""))
+    elif action == "approve_plan" and not state.get("result") and has_answers(state, state.get("wanted_mode") or mode or ""):
+        # "Approve" before any results, but every answer is known (the planner can run ahead): run the check.
+        await on_intake(ctx, sender, state, {"mode": state.get("wanted_mode") or mode})
     elif action == "approve_plan":
         if isinstance(selection.get("fix_ids"), list) and selection["fix_ids"]:
             state["chosen_fixes"] = selection["fix_ids"]
-        await request_fee(ctx, sender, state)
+        if (state.get("result") or {}).get("mode") == "claim":
+            await build_claim(ctx, sender, state)
+        else:
+            await shop(ctx, sender, state)
     elif action == "payment_opened":
         await send(ctx, sender, text_message("Finish the checkout in the new tab, then tap I've paid."))
+    elif action == "link_opened":
+        await send(ctx, sender, text_message("Opened in a new tab."))
     elif action == "show_results" and state.get("result"):
         await show_results(ctx, sender, state, "Here are your results again.")
     elif action == "check_payment":
@@ -417,9 +464,14 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict, int
     profile = profile_from(selection)
     state["mode"] = mode
     state["profile"] = profile.model_dump()
+    # A new check starts a new plan: its own cart, fee and claim package.
+    for stale in ("cart", "cart_for", "chosen_fixes", "claim_package", "claim_running"):
+        state.pop(stale, None)
+    state["payment"] = None
     # One reply per message: ASI:One's planner treats the first text reply as the agent's whole answer.
     result = await run_mode(ctx, state, mode, profile)
     state["result"] = result.model_dump()
+    state["result_id"] = str(uuid4())
     if not result.findings:
         await send(ctx, sender, text_message(result.summary))
         return
@@ -427,6 +479,7 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict, int
                  if mode == "claim" else "Pick the fixes you want and approve; I'll find products that fit.")
     view = f" [Open the 3D view]({result.viewer_url}) to see every finding pinned on your home." if result.viewer_url else ""
     await show_results(ctx, sender, state, f"{intro} {result.summary} {next_step}{view}".strip())
+    prefetch(ctx, state)
 
 
 def evidence_image(state: dict, finding) -> str | None:
@@ -460,54 +513,178 @@ async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: 
     await send_card(ctx, sender, state, finding.title, "detail", payload)
 
 
-def fee_label() -> str:
-    return f"${stripe_pay.FEE_USD}"
+def fee_label(state: dict | None = None) -> str:
+    """The service fee: what the Cart agent set for this plan, else the flat fee."""
+    fee = ((state or {}).get("cart") or {}).get("service_fee_usd") or FLAT_SERVICE_FEE_USD
+    return f"${format_service_fee_usd(fee)}"
 
 
-async def request_fee(ctx: Context, sender: str, state: dict):
+SHOP_TIMEOUT_S = 50   # Product Finder stops each search at 30 s and runs them all at once
+CLAIM_PRICE_LIMIT = 40  # replacement-price searches per claim (the rest are marked to price by hand)
+
+
+async def ask(ctx: Context, agent: str, request, response_type, timeout: float):
+    """One request to one of Pranay's action agents; None if it doesn't answer in time."""
+    reply, status = await ctx.send_and_receive(ADDRESSES[agent], request, response_type=response_type, timeout=timeout)
+    if isinstance(reply, response_type):
+        return reply
+    ctx.logger.warning(f"{agent} did not answer ({status.detail})")
+    return None
+
+
+async def find_quotes(ctx: Context, job_id: str, queries: list[ProductQuery]) -> FindProductsResult:
+    """Ask the Product Finder agent; if it's unreachable, run the same search here."""
+    found = await ask(ctx, "product_finder", FindProductsRequest(job_id=job_id, queries=queries),
+                      FindProductsResult, SHOP_TIMEOUT_S)
+    if found is not None and found.ok:
+        return found
+    ctx.logger.warning(f"job={job_id} Product Finder failed ({found.error if found else 'no reply'}); searching here")
+    return await local_find_products(FindProductsRequest(job_id=job_id, queries=queries))
+
+
+# Product searches started while the user reads the results, keyed by result_id, so approving
+# (or asking for the claim package) doesn't wait for them. One process, so memory is enough.
+PREFETCH: dict[str, asyncio.Task] = {}
+
+
+def prefetch(ctx: Context, state: dict):
+    """Search for every fix's products (or every claim item's price) in the background."""
+    result_id, job_id = state.get("result_id"), state.get("job_id")
+    if not result_id or not job_id or result_id in PREFETCH:
+        return
+    claim = (state.get("result") or {}).get("mode") == "claim"
+    queries = claim_queries(state) if claim else plan_queries(state, everything=True)
+    if not queries:
+        return
+    async def run() -> FindProductsResult:
+        t0 = time.monotonic()
+        found = await find_quotes(ctx, job_id, queries)
+        ctx.logger.info(f"{_now()} job={job_id} prefetch: {len(queries)} searches -> {len(found.quotes)} quotes "
+                        f"in {time.monotonic() - t0:.1f} s")
+        return found
+
+    ctx.logger.info(f"{_now()} job={job_id} prefetch started: {len(queries)} searches")
+    PREFETCH[result_id] = asyncio.get_running_loop().create_task(run())
+    for old in list(PREFETCH)[:-50]:  # keep memory bounded
+        PREFETCH.pop(old, None)
+
+
+async def quotes_for(ctx: Context, state: dict, queries: list[ProductQuery]) -> FindProductsResult:
+    """The prefetched search when there is one (waiting for it if it's still running), else a new search."""
+    task = PREFETCH.get(state.get("result_id") or "")
+    if task is not None:
+        try:
+            found = await asyncio.wait_for(asyncio.shield(task), SHOP_TIMEOUT_S)
+            wanted = {q.constraints.get("finding_id") for q in queries}
+            return found.copy(update={"quotes": [q for q in found.quotes if q.finding_id in wanted]})
+        except Exception:
+            ctx.logger.exception("prefetched product search failed; searching again")
+    return await find_quotes(ctx, state["job_id"], queries)
+
+
+def claim_queries(state: dict) -> list[ProductQuery]:
+    result = ModeResult.model_validate(state["result"])
+    items = [f for f in result.findings if f.kind == "item" and f.product_query][:CLAIM_PRICE_LIMIT]
+    return [f.product_query.copy(update={"constraints": {**f.product_query.constraints, "finding_id": f.id}})
+            for f in items]
+
+
+def plan_queries(state: dict, everything: bool = False) -> list[ProductQuery]:
+    """One product search per chosen fix, most severe first, tagged with the finding it fixes."""
+    result = ModeResult.model_validate(state["result"])
+    chosen = set() if everything else set(state.get("chosen_fixes") or [])
+    fixes = [f for f in result.findings if f.product_query and (not chosen or f.id in chosen)]
+    fixes.sort(key=lambda f: -f.severity)
+    return [f.product_query.copy(update={"constraints": {**f.product_query.constraints, "finding_id": f.id}})
+            for f in fixes]
+
+
+async def shop(ctx: Context, sender: str, state: dict):
+    """Approve -> Product Finder -> Cart -> cart card with the Stripe service fee."""
     result = state.get("result")
-    if not result or result.get("mode") == "claim" or not result.get("findings"):
+    if not result or not result.get("findings"):
         await show_modes(ctx, sender, state, "There's no fix plan to approve yet. Pick a check to run first.")
         return
     if (state.get("payment") or {}).get("status") == "paid":
-        await send(ctx, sender, text_message("You've already paid for this plan. Next I'll find products that fit."))
+        await after_payment(ctx, sender, state, state["payment"].get("session", ""), again=True)
         return
+    if state.get("cart") and (state.get("payment") or {}).get("status") == "requested" \
+            and state.get("cart_for") == state.get("chosen_fixes"):
+        await send_card(ctx, sender, state, "Here's your cart again. Pay the service fee to get the store links.", "custom",
+                        cards.cart_card(CartResult.model_validate(state["cart"]), state.get("profile", {}).get("budget_usd"),
+                                        fee_label(state), state["payment"]["checkout_url"]))
+        return
+    queries = plan_queries(state)
+    if not queries:
+        await send(ctx, sender, text_message(
+            "None of the fixes you picked need anything bought: they're about moving things or changing habits."))
+        return
+    job_id = state["job_id"]
+    t0 = time.monotonic()
+    found = await quotes_for(ctx, state, queries)
+    t1 = time.monotonic()
+    budget = (state.get("profile") or {}).get("budget_usd")
+    cart = await ask(ctx, "cart", CartRequest(job_id=job_id, quotes=found.quotes, budget_usd=budget), CartResult, 20)
+    if cart is None or not cart.ok:
+        cart = build_cart(CartRequest(job_id=job_id, quotes=found.quotes, budget_usd=budget))
+    ctx.logger.info(f"job={job_id} shop: {len(queries)} searches -> {len(found.quotes)} quotes -> {len(cart.items)} in cart "
+                    f"(products {t1 - t0:.1f} s, cart {time.monotonic() - t1:.1f} s)")
+    state["cart"] = cart.model_dump()
+    state["cart_for"] = state.get("chosen_fixes")
+    if not cart.items:
+        await send(ctx, sender, text_message(
+            f"I searched for {len(queries)} fix{'es' if len(queries) != 1 else ''} but couldn't confirm a product page "
+            "with a price for any of them right now, so there's nothing to charge. Say \"approve\" to try again."))
+        return
+    await request_fee(ctx, sender, state)
+
+
+async def request_fee(ctx: Context, sender: str, state: dict):
+    cart = CartResult.model_validate(state["cart"])
     if not stripe_pay.enabled():
         ctx.logger.error("Stripe test keys are missing; cannot request the service fee")
         await send(ctx, sender, text_message(
-            "Payments aren't switched on yet, so I can't take the service fee right now. Your results are saved."))
+            "Payments aren't switched on yet, so I can't take the service fee right now. Your cart is saved."))
         return
+    fee = format_service_fee_usd(cart.service_fee_usd)
     reference = state.get("job_id") or str(uuid4())
+    t0 = time.monotonic()
     try:
-        checkout = await stripe_pay.create_checkout(reference, "Products that fit your measured space, with checkout links")
+        checkout = await stripe_pay.create_checkout(
+            reference, f"Store links for {len(cart.items)} products that fit your measured space", fee)
     except Exception:
         ctx.logger.exception("Stripe checkout failed")
         await send(ctx, sender, text_message("I couldn't reach the payment provider. Please say \"approve\" again in a moment."))
         return
     # Send RequestPayment before anything slow (or any LLM call) so ASI:One renders the payment card.
     await ctx.send(sender, RequestPayment(
-        accepted_funds=[Funds(currency="USD", amount=stripe_pay.FEE_USD, payment_method="stripe")],
+        accepted_funds=[Funds(currency="USD", amount=fee, payment_method="stripe")],
         recipient=str(coordinator.address),
         deadline_seconds=1800,
         reference=reference,
-        description=f"Last Mile Home service fee: {fee_label()}",
+        description=f"Last Mile Home service fee: ${fee}",
         metadata={
             "stripe": checkout["embedded"],
             "service": "last_mile_home",
-            "content": "Pay the service fee to get products that fit and checkout links.",
+            "content": f"Pay the ${fee} service fee to get the store links for your {len(cart.items)} products.",
         },
     ))
     state["payment"] = {
         "status": "requested",
         "reference": reference,
+        "fee": fee,
         "stripe_sessions": [checkout["embedded_id"], checkout["hosted_id"]],
         "checkout_url": checkout["hosted_url"],
     }
+    budget = (state.get("profile") or {}).get("budget_usd")
+    over = "" if cart.within_budget or budget is None else f" That's over your ${budget:,.0f} budget, so I left out the lowest-priority items."
     # Plain ASI:One chat may not render embedded Stripe checkout, so the card's Pay button opens the hosted page.
-    await send_card(ctx, sender, state,
-                    f"Here's your secure checkout for the ${stripe_pay.FEE_USD} service fee: "
-                    f"[pay with Stripe]({checkout['hosted_url']}). Then tap I've paid.",
-                    "custom", cards.payment_card(fee_label(), checkout["hosted_url"]))
+    await send_card(
+        ctx, sender, state,
+        f"I found {len(cart.items)} product{'s' if len(cart.items) != 1 else ''} that fit, ${cart.subtotal_usd:,.2f} in total.{over} "
+        f"Pay the ${fee} service fee ([secure Stripe checkout]({checkout['hosted_url']})) to get the store links, then tap I've paid.",
+        "custom", cards.cart_card(cart, budget, f"${fee}", checkout["hosted_url"]))
+    ctx.logger.info(f"job={reference} fee requested: Stripe + replies {time.monotonic() - t0:.1f} s")
 
 
 async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
@@ -515,45 +692,157 @@ async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
 
     Only sessions this conversation created count, so a forged or reused id can't unlock anything.
     """
-    if session_id not in (state.get("payment") or {}).get("stripe_sessions", []):
+    payment = state.get("payment") or {}
+    if session_id not in payment.get("stripe_sessions", []):
         ctx.logger.warning(f"PAYMENT rejected: {session_id} is not one of this conversation's checkout sessions")
         return False
-    req = VerifyPaymentRequest(
-        job_id=state.get("job_id") or "", transaction_id=session_id,
-        expected_amount_usd=float(stripe_pay.FEE_USD))
-    reply, status = await ctx.send_and_receive(
-        ADDRESSES["payment_verifier"], req, response_type=VerifyPaymentResult, timeout=15)
-    if isinstance(reply, VerifyPaymentResult) and reply.ok:
+    fee = payment.get("fee") or format_service_fee_usd(FLAT_SERVICE_FEE_USD)
+    req = VerifyPaymentRequest(job_id=state.get("job_id") or "", service_fee_usd=fee, transaction_id=session_id)
+    reply = await ask(ctx, "payment_verifier", req, VerifyPaymentResult, 20)
+    if reply is not None and reply.ok:
+        ctx.logger.info(f"PAYMENT verifier: verified={reply.verified} {reply.detail}")
         return reply.verified
-    ctx.logger.info(f"Payment Verifier unavailable ({status.detail}); checking Stripe directly")
+    ctx.logger.info("Payment Verifier unavailable; checking Stripe directly")
     try:
-        return await stripe_pay.is_paid(session_id, expected_usd=float(stripe_pay.FEE_USD))
+        return await stripe_pay.is_paid(session_id, expected_usd=float(fee))
     except Exception:
         ctx.logger.exception(f"Stripe lookup failed for {session_id}")
         return False
 
 
-async def after_payment(ctx: Context, sender: str, state: dict, session_id: str):
+async def after_payment(ctx: Context, sender: str, state: dict, session_id: str, again: bool = False):
     state["payment"] = {**state.get("payment", {}), "status": "paid", "session": session_id}
-    await send_card(ctx, sender, state, f"Payment received: ${stripe_pay.FEE_USD}. Thank you!", "custom",
-                    cards.receipt_card(f"${stripe_pay.FEE_USD}", session_id[-12:]))
+    cart = CartResult.model_validate(state["cart"]) if state.get("cart") else None
+    links = " · ".join(f"[{q.title[:40]}]({q.url})" for q in (cart.items if cart else [])[:6])
+    lead = "You're all paid." if again else f"Payment received: {fee_label(state)}. Thank you!"
+    await send_card(ctx, sender, state, f"{lead} Your store links: {links}" if links else lead, "custom",
+                    cards.receipt_card(fee_label(state), session_id[-12:], cart))
 
 
 async def check_payment(ctx: Context, sender: str, state: dict):
     payment = state.get("payment") or {}
     if not payment.get("stripe_sessions") and payment.get("status") != "paid":
         await send(ctx, sender, text_message(
-            "There's nothing to pay yet. Once you approve a fix plan I'll send you a secure Stripe checkout."))
+            "There's nothing to pay yet. Once you approve a fix plan I'll find products and send you a secure Stripe checkout."))
         return
     if payment.get("status") == "paid":
-        await send(ctx, sender, text_message("You're all paid. Next I'll find products that fit."))
+        await after_payment(ctx, sender, state, payment.get("session", ""), again=True)
         return
-    for session_id in payment.get("stripe_sessions", []):
-        if await verify_paid(ctx, state, session_id):
+    # The embedded and the hosted checkout are separate sessions: check both at once.
+    sessions = payment.get("stripe_sessions", [])
+    paid = await asyncio.gather(*(verify_paid(ctx, state, sid) for sid in sessions))
+    for session_id, ok in zip(sessions, paid):
+        if ok:
             await after_payment(ctx, sender, state, session_id)
             return
     await send_card(ctx, sender, state, "I don't see the payment yet. Finish the Stripe checkout, then tap I've paid again.",
-                    "custom", cards.payment_card(fee_label(), payment.get("checkout_url", "https://checkout.stripe.com")))
+                    "custom", cards.payment_card(fee_label(state), payment.get("checkout_url", "https://checkout.stripe.com")))
+
+
+CLAIM_INLINE_WAIT_S = 30  # wait this long for the prices, then file and answer; else post the package later
+
+
+async def make_claim_package(ctx: Context, state: dict) -> dict:
+    """Prices (from the search started with the results) -> Insurance Claim Filer -> saved package."""
+    job_id = state["job_id"]
+    result = ModeResult.model_validate(state["result"])
+    items = [f for f in result.findings if f.kind == "item"]
+    found = await quotes_for(ctx, state, claim_queries(state))
+    price = {}
+    for q in found.quotes:  # the primary pick (cheapest verified) is the replacement price
+        if q.finding_id and (q.specs or {}).get("role") != "backup":
+            price.setdefault(q.finding_id, q)
+    priced, unpriced = [], 0
+    for f in items:
+        q = price.get(f.id)
+        frame = evidence_image(state, f)
+        evidence = [e.copy(update={"frame_url": frame}) for e in f.evidence[:1]] if frame else f.evidence
+        if q:
+            priced.append(f.copy(update={"value_usd": q.price_usd, "value_basis": "estimate", "evidence": evidence}))
+        else:
+            unpriced += 1
+            priced.append(f.copy(update={"value_basis": "needs_price", "evidence": evidence}))
+    request = ClaimRequest(job_id=job_id, space_id=state["space_id"], findings=priced,
+                           profile=Profile.model_validate(state.get("profile") or {}))
+    pkg = await ask(ctx, "insurance_filer", request, ClaimPackage, 45)
+    if pkg is None:
+        pkg = await local_build_claim_package(request)
+    ctx.logger.info(f"job={job_id} claim package: {pkg.item_count} items, ${pkg.total_usd:,.2f}, ok={pkg.ok}")
+    return {"package": pkg.model_dump(), "findings": [f.model_dump() for f in priced], "unpriced": unpriced}
+
+
+async def build_claim(ctx: Context, sender: str, state: dict):
+    """Price every item (Product Finder), then the Insurance Claim Filer builds the package.
+
+    Pricing starts when the inventory is shown, so it's usually done by the time the user asks:
+    then the package is the reply. If not, this answers now and posts the package when ready.
+    """
+    if state.get("claim_package"):
+        await show_claim_package(ctx, sender, state, "Here's your claim package again.")
+        return
+    if state.get("claim_running"):
+        await send(ctx, sender, text_message("Still pricing your items; the claim package will appear here when it's ready."))
+        return
+    prefetch(ctx, state)  # no-op if the prices are already being searched
+    task = PREFETCH.get(state.get("result_id") or "")
+    if task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(task), CLAIM_INLINE_WAIT_S)
+        except asyncio.TimeoutError:
+            pass
+    if task is not None and task.done():
+        try:
+            state["claim_package"] = await make_claim_package(ctx, state)
+            await show_claim_package(ctx, sender, state, "")
+            return
+        except Exception:
+            ctx.logger.exception(f"job={state['job_id']} claim package failed inline; retrying in the background")
+    result = ModeResult.model_validate(state["result"])
+    count = min(CLAIM_PRICE_LIMIT, sum(1 for f in result.findings if f.kind == "item"))
+    state["claim_running"] = True
+    await send(ctx, sender, text_message(
+        f"Pricing {count} items at today's replacement cost, then building your claim package "
+        "(spreadsheet and cover letter). It takes about a minute; I'll post it here."))
+    job_id = state["job_id"]
+    snapshot = dict(state)
+
+    async def run():
+        saved = None
+        try:
+            saved = await make_claim_package(ctx, snapshot)
+        except Exception:
+            ctx.logger.exception(f"job={job_id} claim package failed")
+        # The user may have done other things during the minute this took: update the latest state.
+        fresh = load(ctx, sender)
+        fresh.pop("claim_running", None)
+        if fresh.get("job_id") != job_id:
+            save(ctx, sender, fresh)
+            return
+        if saved:
+            fresh["claim_package"] = saved
+            await show_claim_package(ctx, sender, fresh, "")
+        else:
+            await send(ctx, sender, text_message(
+                "Sorry, I couldn't finish the claim package. Your inventory is saved; tap Build my claim package to try again."))
+        save(ctx, sender, fresh)
+
+    asyncio.get_running_loop().create_task(run())
+
+
+async def show_claim_package(ctx: Context, sender: str, state: dict, lead: str):
+    saved = state["claim_package"]
+    pkg = ClaimPackage.model_validate(saved["package"])
+    findings = [Finding.model_validate(f) for f in saved["findings"]]
+    priced = [f for f in findings if f.value_usd]
+    links = " · ".join(f"[{label}]({url})" for label, url in (("Excel", pkg.inventory_xlsx_url), ("CSV", pkg.inventory_csv_url),
+                                                             ("Cover letter", pkg.letter_pdf_url)) if url)
+    unpriced = saved["unpriced"]
+    still = f" ({unpriced} still need a price)" if unpriced else ""
+    download = f"Download: {links}. " if links else ""
+    narration = (f"{lead} Your claim package is ready: {pkg.item_count} items, ${pkg.total_usd:,.2f} replacement cost{still}. "
+                 f"{download}It's ready to send to your insurer; nothing has been filed.").strip()
+    hero = state.get("frames", {}).get("claim") or next(iter(state.get("frames", {}).values()), "")
+    await send_card(ctx, sender, state, narration, "custom", cards.claim_package_card(pkg, priced, saved["unpriced"], hero))
 
 
 @payments.on_message(CommitPayment)

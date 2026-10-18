@@ -1,0 +1,15 @@
+{
+  "job_id": "job_baby_products",
+  "queries": [
+    {
+      "query": "child safety outlet covers",
+      "quantity": 12,
+      "constraints": {"finding_id": "outlet_covers"}
+    },
+    {
+      "query": "furniture corner guards",
+      "quantity": 8,
+      "constraints": {"finding_id": "corner_guards"}
+    }
+  ]
+}

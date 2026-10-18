@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from shared import config
+from shared import config, uagents_patch
 from uagents import Agent, Bureau, Context, Protocol
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
@@ -224,6 +224,7 @@ def report():
 WANTED = [int(a) for a in sys.argv[1:]] or sorted(SCENARIOS)
 
 if __name__ == "__main__":
+    uagents_patch.apply()
     bureau = Bureau(port=int(os.environ.get("EDGE_PORT", 8292)))  # another run may hold 8292
     for a in LIVE_AGENTS + [make_user(n) for n in WANTED]:
         bureau.add(a)

@@ -13,5 +13,14 @@ Upload a 30-second video or a few photos of a home. Last Mile Home turns it into
 ## Usage
 Start a chat and attach a video or photos of a room, for example: "Here's a video of my mom's apartment. Can you check it for fall risks?"
 
+## How it works
+Last Mile Home coordinates ten agents, each listed on Agentverse:
+
+1. **Home 3D Space Builder** maps the video into rooms, doors and objects with measurements.
+2. **Elder Safety Inspector**, **Baby-Proofing Inspector**, **Space Transformer** or **Insurance Claim Inventory** checks the home and pins every finding in a 3D view.
+3. Pick the fixes you want. **Home Product Finder** searches real stores for products that fit your measurements, and **Home Cart Builder** builds a cart within your budget, most important fixes first.
+4. Pay a small service fee with Stripe (test mode) through the Payment Protocol. **Stripe Payment Verifier** confirms it, and you get the store link for every product. The links are a handoff, not an order.
+5. For an insurance claim, every item is priced at today's replacement cost and **Insurance Claim Filer** builds a ready-to-send package: an inventory spreadsheet and a cover letter.
+
 ## Status
 This agent is under active development for LA Hacks AI 2026.
