@@ -131,13 +131,26 @@ def findings_carousel(result: ModeResult, fallback_image: str) -> dict:
     return {"title": MODES[result.mode]["title"], "subtitle": result.summary, "items": items}
 
 
-def fix_plan_review(result: ModeResult, fee_fet: str) -> dict:
+def fix_plan_review(result: ModeResult, fee_label: str) -> dict:
     fixes = [f for f in result.findings if f.fix_summary]
     rows = [{"label": f.title, "value": f.fix_summary} for f in fixes[:8]]
-    rows.append({"label": "Service fee", "value": f"{fee_fet} FET (testnet)"})
+    rows.append({"label": "Service fee", "value": fee_label})
     return {
         "title": "Your fix plan",
         "summary_rows": rows,
         "approve_cta": {"label": "Approve and find products", "selection": {"action": "approve_plan"}, "primary": True},
         "reject_cta": {"label": "Not now", "selection": {"action": "decline_plan"}},
+    }
+
+
+def payment_check(fee_label: str) -> dict:
+    return {
+        "title": "Pay the service fee",
+        "summary_rows": [
+            {"label": "Fee", "value": fee_label},
+            {"label": "You get", "value": "Products that fit your measured space, with checkout links"},
+            {"label": "Test card", "value": "4242 4242 4242 4242, any future date, any CVC"},
+        ],
+        "approve_cta": {"label": "I've paid", "selection": {"action": "check_payment"}, "primary": True},
+        "reject_cta": {"label": "Cancel", "selection": {"action": "decline_plan"}},
     }

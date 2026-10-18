@@ -1,11 +1,10 @@
 """Last Mile Home Coordinator: the only agent ASI:One talks to.
 
 Flow: video/photos -> Space Builder -> mode cards -> intake form -> specialist ->
-findings + fix plan -> service fee via the Payment Protocol (testnet FET).
+findings + fix plan -> service fee via the Payment Protocol (Stripe, test mode).
 Session state lives in ctx.storage, keyed by the ASI:One sender.
 """
 import json
-import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,6 +18,7 @@ from uagents_core.contrib.protocols.chat import (
     chat_protocol_spec,
 )
 from uagents_core.contrib.protocols.payment import (
+    CancelPayment,
     CommitPayment,
     CompletePayment,
     Funds,
@@ -34,13 +34,22 @@ from agents.specialists.elder.logic import analyze as elder_analyze
 from agents.specialists.transformer.logic import analyze as transformer_analyze
 from shared.chat import attachments, card_message, clean_text, parse_selection, text_message, video_frame
 from shared.demo_space import demo_space
-from shared.models import ModeRequest, ModeResult, Profile, Space, SpaceBuildRequest, SpaceBuildResult
+from shared.models import (
+    ModeRequest,
+    ModeResult,
+    Profile,
+    Space,
+    SpaceBuildRequest,
+    SpaceBuildResult,
+    VerifyPaymentRequest,
+    VerifyPaymentResult,
+)
+from shared import stripe_pay
 from shared.space_client import get_space
 
 ADDRESSES = json.loads((config.ROOT / "shared" / "addresses.json").read_text())
 MODE_AGENT = {"elder": "elder", "baby": "baby", "transform": "transformer", "claim": "claim"}
 LOCAL_ANALYZE = {"elder": elder_analyze, "baby": baby_analyze, "transform": transformer_analyze, "claim": claim_analyze}
-SERVICE_FEE_FET = os.getenv("SERVICE_FEE_FET", "0.5")
 
 GREETING = (
     "Hi, I'm Last Mile Home. Attach a 30-second video or a few photos of a home, and I'll map it in 3D. "
@@ -104,6 +113,8 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
         await on_finding_detail(ctx, sender, state, selection.get("finding_id", ""))
     elif action == "approve_plan" or text.lower() in {"pay", "approve"}:
         await request_fee(ctx, sender, state)
+    elif action == "check_payment" or text.lower() in {"paid", "i've paid", "i paid", "done"}:
+        await check_payment(ctx, sender, state)
     elif action == "decline_plan":
         await send(ctx, sender, text_message("No problem. Your results are saved; say \"approve\" whenever you're ready."))
     elif action == "show_modes" or state.get("space_id"):
@@ -224,7 +235,7 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict):
     else:
         await send(ctx, sender, card_message(
             "Here's the fix plan. Approve it and I'll find products that fit and prepare checkout links.",
-            "review", cards.fix_plan_review(result, SERVICE_FEE_FET)))
+            "review", cards.fix_plan_review(result, fee_label())))
 
 
 async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: str):
@@ -252,40 +263,102 @@ async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: 
     await send(ctx, sender, card_message(finding.title, "detail", payload))
 
 
+def fee_label() -> str:
+    return f"${stripe_pay.FEE_USD} by card (Stripe test mode)"
+
+
 async def request_fee(ctx: Context, sender: str, state: dict):
-    # Send RequestPayment before anything slow (or any LLM call) so ASI:One renders the payment card.
+    if not stripe_pay.enabled():
+        ctx.logger.error("Stripe test keys are missing; cannot request the service fee")
+        await send(ctx, sender, text_message(
+            "Payments aren't switched on yet, so I can't take the service fee right now. Your results are saved."))
+        return
     reference = state.get("job_id") or str(uuid4())
+    try:
+        checkout = await stripe_pay.create_checkout(reference, "Products that fit your measured space, with checkout links")
+    except Exception:
+        ctx.logger.exception("Stripe checkout failed")
+        await send(ctx, sender, text_message("I couldn't reach the payment provider. Please say \"approve\" again in a moment."))
+        return
+    # Send RequestPayment before anything slow (or any LLM call) so ASI:One renders the payment card.
     await ctx.send(sender, RequestPayment(
-        accepted_funds=[Funds(currency="FET", amount=SERVICE_FEE_FET, payment_method="fet_direct")],
-        recipient=str(coordinator.wallet.address()),
-        deadline_seconds=600,
+        accepted_funds=[Funds(currency="USD", amount=stripe_pay.FEE_USD, payment_method="stripe")],
+        recipient=str(coordinator.address),
+        deadline_seconds=1800,
         reference=reference,
-        description=f"Last Mile Home service fee: {SERVICE_FEE_FET} FET (testnet)",
+        description=f"Last Mile Home service fee: {fee_label()}",
         metadata={
-            "fet_network": "stable-testnet",
+            "stripe": checkout["embedded"],
             "service": "last_mile_home",
             "content": "Pay the service fee to get products that fit and checkout links.",
         },
     ))
-    state["payment"] = {"status": "requested", "reference": reference}
+    state["payment"] = {
+        "status": "requested",
+        "reference": reference,
+        "stripe_sessions": [checkout["embedded_id"], checkout["hosted_id"]],
+    }
+    # Plain ASI:One chat may not render embedded Stripe checkout, so also offer the hosted page.
+    await send(ctx, sender, card_message(
+        f"To pay ${stripe_pay.FEE_USD}, [open the secure Stripe checkout]({checkout['hosted_url']}) "
+        "(test mode: card 4242 4242 4242 4242, any future date, any CVC), then tap **I've paid**.",
+        "review", cards.payment_check(fee_label())))
+
+
+async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
+    """Ask Pranay's Payment Verifier; if it doesn't answer, check with Stripe directly."""
+    req = VerifyPaymentRequest(
+        job_id=state.get("job_id") or "", transaction_id=session_id,
+        expected_amount_usd=float(stripe_pay.FEE_USD))
+    reply, status = await ctx.send_and_receive(
+        ADDRESSES["payment_verifier"], req, response_type=VerifyPaymentResult, timeout=15)
+    if isinstance(reply, VerifyPaymentResult) and reply.ok:
+        return reply.verified
+    ctx.logger.info(f"Payment Verifier unavailable ({status.detail}); checking Stripe directly")
+    try:
+        return await stripe_pay.is_paid(session_id)
+    except Exception:
+        ctx.logger.exception(f"Stripe lookup failed for {session_id}")
+        return False
+
+
+async def after_payment(ctx: Context, sender: str, state: dict, session_id: str):
+    state["payment"] = {**state.get("payment", {}), "status": "paid", "session": session_id}
     await send(ctx, sender, text_message(
-        f"I've sent a payment request for the {SERVICE_FEE_FET} FET service fee (Fetch.ai testnet, not real money). "
-        "Approve it to continue."))
+        f"Payment received: ${stripe_pay.FEE_USD} by card (Stripe test mode). "
+        "Next I'll find products that fit and prepare checkout links."))
+
+
+async def check_payment(ctx: Context, sender: str, state: dict):
+    payment = state.get("payment") or {}
+    if payment.get("status") == "paid":
+        await send(ctx, sender, text_message("You're all paid. Next I'll find products that fit."))
+        return
+    for session_id in payment.get("stripe_sessions", []):
+        if await verify_paid(ctx, state, session_id):
+            await after_payment(ctx, sender, state, session_id)
+            return
+    await send(ctx, sender, card_message(
+        "I don't see the payment yet. Finish the Stripe checkout, then tap I've paid again.",
+        "review", cards.payment_check(fee_label())))
 
 
 @payments.on_message(CommitPayment)
 async def on_commit(ctx: Context, sender: str, msg: CommitPayment):
     ctx.logger.info(
         f"PAYMENT commit from={sender[:16]}… tx={msg.transaction_id} funds={msg.funds.amount} {msg.funds.currency} "
-        f"method={msg.funds.payment_method} metadata={msg.metadata}")
-    # Checkpoint A accepts the commit as-is; Pranay's Payment Verifier checks the tx on-chain at checkpoint C.
-    await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
+        f"method={msg.funds.payment_method}")
     state = load(ctx, sender)
-    state["payment"] = {"status": "paid", "tx": msg.transaction_id}
+    if msg.funds.payment_method != "stripe" or not msg.transaction_id:
+        await ctx.send(sender, CancelPayment(transaction_id=msg.transaction_id, reason="Only card payments via Stripe are accepted."))
+        return
+    if not await verify_paid(ctx, state, msg.transaction_id):
+        await ctx.send(sender, CancelPayment(
+            transaction_id=msg.transaction_id, reason="Stripe checkout isn't complete yet. Finish it, then pay again."))
+        return
+    await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
+    await after_payment(ctx, sender, state, msg.transaction_id)
     save(ctx, sender, state)
-    await send(ctx, sender, text_message(
-        f"Payment received on the Fetch.ai testnet (transaction {msg.transaction_id}). "
-        "Next I'll find products that fit and prepare checkout links."))
 
 
 @payments.on_message(RejectPayment)

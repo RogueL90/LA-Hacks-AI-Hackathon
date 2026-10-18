@@ -70,6 +70,8 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     for c in msg.content:
         if isinstance(c, TextContent):
             print(f"  AGENT: {c.text[:220]}")
+            if "aren't switched on" in c.text:
+                print(f"SMOKE TEST PASSED ({MODE}): cards seen {seen}; Stripe keys not set, so no payment request")
         elif isinstance(c, MetadataContent) and "card_kind" in c.metadata:
             kind = c.metadata["card_kind"]
             payload = json.loads(c.metadata["card_payload"])
@@ -96,9 +98,13 @@ async def on_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
 @pay.on_message(RequestPayment)
 async def on_request(ctx: Context, sender: str, msg: RequestPayment):
     f = msg.accepted_funds[0]
-    print(f"  PAYMENT REQUEST {f.amount} {f.currency} via {f.payment_method} to {msg.recipient}")
-    await ctx.send(sender, CommitPayment(funds=f, recipient=msg.recipient, transaction_id="SMOKE-TX",
-                                         reference=msg.reference, metadata={"buyer_fet_wallet": "fetch1smoke"}))
+    stripe = (msg.metadata or {}).get("stripe", {})
+    print(f"  PAYMENT REQUEST {f.amount} {f.currency} via {f.payment_method}; "
+          f"embedded checkout ready: {bool(stripe.get('client_secret'))}")
+    # A test card can't be paid without a browser, so commit an unpaid session: the agent must cancel it.
+    await ctx.send(sender, CommitPayment(funds=f, recipient=msg.recipient,
+                                         transaction_id=stripe.get("checkout_session_id", "none"),
+                                         reference=msg.reference))
 
 
 @pay.on_message(CompletePayment)
@@ -108,7 +114,8 @@ async def on_complete(ctx: Context, sender: str, msg: CompletePayment):
 
 @pay.on_message(CancelPayment)
 async def on_cancel(ctx: Context, sender: str, msg: CancelPayment):
-    print(f"  PAYMENT CANCELLED {msg.reason}")
+    print(f"  PAYMENT CANCELLED (expected for an unpaid session): {msg.reason}")
+    print(f"SMOKE TEST PASSED ({MODE}): cards seen {seen}; unpaid checkout correctly refused")
 
 
 user.include(chat)
