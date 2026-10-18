@@ -2,7 +2,8 @@
 
 Steps, one module each (ADITYA.md §3):
   frames.py   video -> 1 fps frames (public URLs become Evidence.frame_url)
-  extract.py  Claude structured extraction -> rooms, doors, objects
+  plan.py     Claude pass 1: rooms, levels, connections -> placed by code
+  extract.py  Claude pass 2 (per room, parallel): objects; also runs plan.py
   scale.py    scale factor from reference objects (doors, counters)
   layout.py   deterministic solver: wall snap, floor snap, de-overlap, clamp
   ids.py      stable ids: obj_{type}_{nn}, room_{name}, door_{nn}
@@ -54,7 +55,8 @@ def run_pipeline(
     frame_set = frames.extract_frames(request.media_urls, request.job_id, max_frames or frames.MAX_FRAMES)
     stats["frames"] = len(frame_set)
     stats["frames_s"] = round(time.perf_counter() - t0, 2)
-    raw = extract.extract_scene(frame_set, effort=effort, stats=stats)
+    floor_plans = [str(frames.resolve_local(u)) for u in request.floor_plan_urls]
+    raw = extract.extract_scene(frame_set, effort=effort, stats=stats, floor_plans=floor_plans, notes=request.notes)
     t1 = time.perf_counter()
     raw = scale.apply_scale(raw)
     raw = layout.solve(raw)

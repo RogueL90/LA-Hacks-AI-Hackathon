@@ -1,63 +1,50 @@
-"""Claude structured extraction: frames -> rough rooms, doors, objects (meters).
+"""Claude extraction in two passes: frames -> rooms, doors, objects (meters).
 
-Uses ANTHROPIC_MODEL (Opus 5.5 by default) with structured outputs. The prompt asks Claude to
-use reference objects for scale: interior door ~2.03 x 0.81 m, counter ~0.91 m,
-outlet cover ~0.11 m. Each object records the frame + timestamp it was seen in.
+Uses ANTHROPIC_MODEL (Fable 5.1 by default) with structured outputs.
 
-Rooms come back as axis-aligned rectangles on one shared floor plan and doors as
-(wall, offset) on a room; layout.py snaps these into clean polygons. The response
-schema below is deliberately flat (no free-form dicts, no optionals) so it stays
+  1. plan.py   one call over every frame: rooms, levels, how they connect, frame -> room.
+               Rooms are then placed by code, not by the model.
+  2. per room  one call per room, in parallel, with only that room's frames at higher
+               resolution: every object, positioned relative to the room's own walls.
+               Small focused requests find far more objects than one call over the house.
+
+Optional extra inputs (floor plan images, free-text notes) go to both passes and outrank
+the model's own estimates. Each object records the frame + timestamp it was seen in.
+The response schema is deliberately flat (no free-form dicts, no optionals) so it stays
 inside the JSON-schema subset structured outputs supports.
 """
-import base64
-import io
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Optional
 
-from PIL import Image
 from pydantic import BaseModel
 
-from config import ANTHROPIC_API_KEY, ANTHROPIC_EFFORT, ANTHROPIC_MODEL
+from config import ANTHROPIC_EFFORT, ANTHROPIC_PLAN_EFFORT
+from pipeline import llm, plan
 from pipeline.catalog import EXTRACTABLE_TYPES, GROUPS, MOVABLE
 
-# Yes/no facts Claude lists only when true; to_raw expands them into the attribute
+# Yes/no facts Claude lists only when true; _object_raw expands them into the attribute
 # names the specialists read. A list keeps output short: most objects have none.
 FLAGS = ("loose", "covered", "anchored", "grab_bar", "sharp_corners", "night_light")
 ObjectType = Literal[EXTRACTABLE_TYPES]  # type: ignore[valid-type]
 Flag = Literal[FLAGS]  # type: ignore[valid-type]
 Shape = Literal["rectangular", "round", "oval", "l_shaped", "irregular"]
-WALLS = ("x_min", "x_max", "z_min", "z_max")
-LLM_IMAGE_PX = 768  # longest edge; Claude bills ~w*h/750 tokens per image (~450 for 768x432)
-LLM_TIMEOUT_S = 90.0  # keeps the whole build inside the 120 s budget
-LLM_MAX_TOKENS = 16000
+
+ROOM_IMAGE_PX = 1024  # per-room calls see fewer frames, so each can be sharper
+MAX_FRAMES_PER_ROOM = 12
+ROOM_WORKERS = 4  # concurrent per-room calls; more mostly buys 429s
+ROOM_RETRIES = 2  # parallel calls on one key do hit rate limits
+DEDUPE_M = 0.6  # same-type objects this close, seen from two open-plan rooms, are one object
 
 
-# --- Response schema (flat on purpose) ---
-
-class ExRoom(BaseModel):
-    name: str
-    x_min: float
-    z_min: float
-    x_max: float
-    z_max: float
-    height_m: float
-
-
-class ExDoor(BaseModel):
-    room_name: str
-    wall: str  # one of WALLS
-    offset_m: float  # door center, measured along the wall from its min-coordinate end
-    width_m: float
-    height_m: float
-
+# --- Per-room response schema (flat on purpose) ---
 
 class ExObject(BaseModel):
     type: ObjectType
     label: str
-    room_name: str
-    x: float  # footprint center on the floor plan
-    z: float
+    x: float  # footprint center, meters from the room's x_min wall
+    z: float  # footprint center, meters from the room's z_min wall
     y_bottom: float  # height of the object's underside above the floor
     width_m: float  # along x before rotation
     height_m: float
@@ -73,39 +60,35 @@ class ExObject(BaseModel):
     frame_index: int
 
 
-class ExScene(BaseModel):
-    rooms: list[ExRoom]
-    doors: list[ExDoor]
+class ExRoomObjects(BaseModel):
     objects: list[ExObject]
 
 
 _CATALOG_TEXT = "\n".join(f"  {group}: {', '.join(types)}" for group, types in GROUPS.items())
+_SIDE_WORDS = {"x_min": "x_min (left)", "x_max": "x_max (right)", "z_min": "z_min (back)", "z_max": "z_max (front)"}
 
-PROMPT = f"""You are measuring a home from walkthrough frames so it can be rebuilt as a 3D floor plan.
-The frames are numbered in the order given. Work in meters on ONE shared top-down floor plan:
-x points right, z points forward, y is up, and the origin (0, 0) is one corner of the first room.
+ROOM_PROMPT = """These frames show the {name} of a home ({w:.1f} m wide along x, {d:.1f} m deep along z,
+{h:.1f} m ceiling). The room's walls, using the same compass as the rest of the house:
+{sides}
+Use the neighbouring rooms to orient yourself in each frame.
 
-ROOMS: return every room you can see as an axis-aligned rectangle (x_min, z_min, x_max, z_max)
-on the shared plan, plus its ceiling height. Rooms that share a wall must share that exact coordinate
-(e.g. the hallway's x_min equals the living room's x_max). Hallways count as rooms.
-Room names are short and unique: "living room", "kitchen", "hallway", "bedroom", "bedroom 2", "bathroom".
-
-DOORS: list each doorway once, attached to one of the rooms it connects. "wall" is which side of that
-room's rectangle it sits on: "x_min", "x_max", "z_min" or "z_max". "offset_m" is the distance from the
-low-coordinate end of that wall to the center of the door. Do NOT also list doors as objects.
-
-OBJECTS: list each physical object ONCE, even if it appears in many frames; use frame_index of the
-clearest frame. Go room by room and include small things too: outlets, switches, cords, lights,
-smoke detectors, grab bars, toys, clutter. Pick the most specific type from this catalog:
-{_CATALOG_TEXT}
+List EVERY physical object inside this room's {w:.1f} x {d:.1f} m area, each ONCE even if it appears in
+many frames (give the frame_index of the clearest one). Count multiples individually: six dining chairs
+are six objects. Include small things too: outlets, switches, cords, lights, smoke detectors, grab bars,
+toys, clutter. Leave out objects that belong to a neighbouring room even if they are visible.
+Pick the most specific type from this catalog:
+{catalog}
 Use "light" for fixed light fixtures (ceiling, wall, plug-in night lights) and the lamp types for lamps.
-Use "clutter" for loose items lying on the floor, and "other" only when nothing above fits (then
-make the label specific). Give the footprint center (x, z) on the shared plan, y_bottom (0 for
-things standing on the floor; e.g. 0.5 for a TV on a stand, 1.4 for a painting, 0.9 for a
-microwave on a counter), and real-world width/height/depth. rotation_deg is 0 when the object's
-front faces +z. shape is the footprint seen from above. model_guess is the brand/model if you can
-tell (e.g. "IKEA Kallax"), else "". seat_height_m is the seat height of toilets, chairs, sofas and
-beds, else 0. confidence is 0..1.
+Use "clutter" for loose items lying on the floor, and "other" only when nothing above fits (then make
+the label specific).
+
+Position: x and z are the footprint centre in meters from this room's x_min and z_min walls
+(0 <= x <= {w:.1f}, 0 <= z <= {d:.1f}). y_bottom is 0 for things standing on the floor (e.g. 0.5 for a
+TV on a stand, 1.4 for a painting, 0.9 for a microwave on a counter). Real-world width/height/depth.
+rotation_deg is 0 when the object's front faces +z (front), 90 when it faces +x (right), 180 when it
+faces back, 270 when it faces left; furniture against a wall faces away from it. shape is the
+footprint seen from above. model_guess is the brand/model if you can tell (e.g. "IKEA Kallax"),
+else "". seat_height_m is the seat height of toilets, chairs, sofas and beds, else 0. confidence is 0..1.
 flags: list only the ones that are clearly true, usually none:
   loose          rug or mat that can slip (no visible backing or pad)
   covered        outlet has a safety cover
@@ -113,145 +96,149 @@ flags: list only the ones that are clearly true, usually none:
   grab_bar       a grab bar is mounted at this tub, shower or toilet
   sharp_corners  hard, square corners (tables, counters, dressers)
   night_light    a light that stays on low at night or is motion-activated
-
-SCALE: estimate sizes from reference objects: a standard interior door is 2.03 m tall x 0.81 m wide,
-a kitchen counter is 0.91 m high, an outlet cover is 0.11 m tall, a standard bed is ~2.0 m long.
-Never guess a room smaller than the furniture inside it."""
+Sizes: interior door 2.03 x 0.81 m, kitchen counter 0.91 m high, outlet cover 0.11 m tall."""
 
 
-def _image_b64(path: str) -> str:
-    with Image.open(path) as im:
-        im = im.convert("RGB")
-        im.thumbnail((LLM_IMAGE_PX, LLM_IMAGE_PX))
-        buf = io.BytesIO()
-        im.save(buf, format="JPEG", quality=85)
-        return base64.standard_b64encode(buf.getvalue()).decode("ascii")
+def _sides_text(room: dict, links: list[dict]) -> str:
+    sides: dict[str, list[str]] = {s: [] for s in _SIDE_WORDS}
+    for link in links:
+        if link["kind"] == "stairs":
+            continue
+        if link["room_a"] == room["name"]:
+            sides[link["side"]].append(f"{link['room_b']} ({link['kind']})")
+        elif link["room_b"] == room["name"]:
+            sides[plan.OPPOSITE[link["side"]]].append(f"{link['room_a']} ({link['kind']})")
+    return "\n".join(f"  {_SIDE_WORDS[s]}: {', '.join(n) if n else 'outer wall'}" for s, n in sides.items())
 
 
-def _call_claude(frames: list[dict], effort: str, stats: dict) -> ExScene:
-    import anthropic
-
-    if not ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set (space_service/.env)")
-    # No retries: a retried timeout would blow the 120 s build budget.
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=LLM_TIMEOUT_S, max_retries=0)
-
-    content: list = []
-    for i, frame in enumerate(frames):
-        ts = frame.get("timestamp_s")
-        content.append({"type": "text", "text": f"Frame {i}" + (f" (t={ts:.0f}s)" if ts is not None else "")})
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": _image_b64(frame["path"])},
-        })
-    content.append({"type": "text", "text": PROMPT})  # images first, instructions last
-
-    t0 = time.perf_counter()
-    response = client.beta.messages.parse(
-        model=ANTHROPIC_MODEL,
-        max_tokens=LLM_MAX_TOKENS,
-        messages=[{"role": "user", "content": content}],
-        output_format=ExScene,
-        output_config={"effort": effort},
-        # On a safety decline, the API re-runs the request on a fallback model in the same call.
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-    )
-    stats.update({
-        "llm_s": round(time.perf_counter() - t0, 2),
-        "model": response.model,
-        "effort": effort,
-        "input_tokens": response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens,
-        "stop_reason": response.stop_reason,
-    })
-    if response.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to analyze these frames")
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError(f"Claude ran out of output tokens ({LLM_MAX_TOKENS}); try fewer frames")
-    if response.parsed_output is None:
-        raise RuntimeError("Claude returned no parseable scene")
-    return response.parsed_output
+def _room_frames(room: dict, raw: dict) -> list[int]:
+    """Frames taken in this room, plus frames from rooms open to it (open-plan objects show up there)."""
+    open_to = {room["name"]}
+    for link in raw["links"]:
+        if link["kind"] == "open" and room["name"] in (link["room_a"], link["room_b"]):
+            open_to.update((link["room_a"], link["room_b"]))
+    own = [i for i, name in sorted(raw["frame_rooms"].items()) if name == room["name"]]
+    near = [i for i, name in sorted(raw["frame_rooms"].items()) if name in open_to and name != room["name"]]
+    own = own[:MAX_FRAMES_PER_ROOM]
+    room_left = MAX_FRAMES_PER_ROOM - len(own)
+    if len(near) > room_left:  # keep the room's own frames, then fill evenly from its open neighbours
+        step = len(near) / room_left if room_left else 0
+        near = [near[int(k * step)] for k in range(room_left)]
+    return sorted(own + near)
 
 
-def to_raw(scene: ExScene, frames: list[dict]) -> dict:
-    """The model's flat answer -> the raw scene dict the rest of the pipeline works on."""
-    rooms = [
-        {
-            "name": r.name.strip() or f"room {i + 1}",
-            "rect": [min(r.x_min, r.x_max), min(r.z_min, r.z_max), max(r.x_min, r.x_max), max(r.z_min, r.z_max)],
-            "height_m": r.height_m if 2.0 <= r.height_m <= 5.0 else 2.5,
-        }
-        for i, r in enumerate(scene.rooms)
-    ]
-    seen: set[str] = set()
-    for room in rooms:  # objects and doors refer to rooms by name, so names must be unique
-        base, n = room["name"], 2
-        while room["name"].lower() in seen:
-            room["name"], n = f"{base} {n}", n + 1
-        seen.add(room["name"].lower())
-    doors = [
-        {
-            "room_name": d.room_name,
-            "wall": d.wall if d.wall in WALLS else "x_max",
-            "offset_m": d.offset_m,
-            "width_m": d.width_m if 0.5 <= d.width_m <= 2.0 else 0.81,
-            "height_m": d.height_m,
-        }
-        for d in scene.doors
-    ]
-    objects = []
-    for o in scene.objects:
-        if o.type == "door":
-            continue  # doors are wall openings, not furniture
-        size = [max(o.width_m, 0.01), max(o.height_m, 0.01), max(o.depth_m, 0.01)]
-        frame = frames[o.frame_index] if 0 <= o.frame_index < len(frames) else None
-        flags = set(o.flags)
-        # Attribute names are the ones Shresth's specialists read (elder / baby / claim / transformer).
-        attributes = {
-            "is_loose": "loose" in flags,
-            "covered": "covered" in flags,
-            "anchored": "anchored" in flags,
-            "grab_bar": "grab_bar" in flags,
-            "sharp_corners": "sharp_corners" in flags,
-            "night_light": "night_light" in flags,
-            "is_movable": o.type in MOVABLE,
-            "shape": o.shape,
-            "height_from_floor": round(max(o.y_bottom, 0.0), 3),
-        }
-        if o.seat_height_m > 0:
-            attributes["seat_height_m"] = round(o.seat_height_m, 3)
-        if o.type == "toilet":
-            attributes["toilet_shape"] = "elongated" if o.shape == "oval" else "round"
-        if o.model_guess:
-            attributes["model_guess"] = o.model_guess
-        objects.append({
-            "type": o.type,
-            "label": o.label.strip() or o.type.replace("_", " "),
-            "room_name": o.room_name,
-            "position": [o.x, max(o.y_bottom, 0.0) + size[1] / 2, o.z],
-            "size": size,
-            "rotation_y": math.radians(o.rotation_deg),
-            "color": o.color_hex if o.color_hex.startswith("#") else None,
-            "material": o.material or None,
-            "attributes": attributes,
-            "confidence": min(max(o.confidence, 0.0), 1.0),
-            "evidence": [{"frame_url": frame["url"], "timestamp_s": frame.get("timestamp_s")}] if frame else [],
-        })
+def _object_raw(o: ExObject, room: dict, frames: list[dict]) -> dict:
+    """One per-room object -> the raw object dict, in the shared floor-plan coordinates."""
+    size = [max(o.width_m, 0.01), max(o.height_m, 0.01), max(o.depth_m, 0.01)]
+    x0, z0, x1, z1 = room["rect"]
+    frame = frames[o.frame_index] if 0 <= o.frame_index < len(frames) else None
+    flags = set(o.flags)
+    # Attribute names are the ones Shresth's specialists read (elder / baby / claim / transformer).
+    attributes = {
+        "is_loose": "loose" in flags,
+        "covered": "covered" in flags,
+        "anchored": "anchored" in flags,
+        "grab_bar": "grab_bar" in flags,
+        "sharp_corners": "sharp_corners" in flags,
+        "night_light": "night_light" in flags,
+        "is_movable": o.type in MOVABLE,
+        "shape": o.shape,
+        "height_from_floor": round(max(o.y_bottom, 0.0), 3),
+    }
+    if o.seat_height_m > 0:
+        attributes["seat_height_m"] = round(o.seat_height_m, 3)
+    if o.type == "toilet":
+        attributes["toilet_shape"] = "elongated" if o.shape == "oval" else "round"
+    if o.model_guess:
+        attributes["model_guess"] = o.model_guess
     return {
-        "source_type": "video" if any(f.get("is_video") for f in frames) else "photos",
-        "rooms": rooms,
-        "doors": doors,
-        "objects": objects,
+        "type": o.type,
+        "label": o.label.strip() or o.type.replace("_", " "),
+        "room_name": room["name"],  # set here, never taken from the model
+        "position": [
+            x0 + min(max(o.x, 0.0), x1 - x0),
+            max(o.y_bottom, 0.0) + size[1] / 2,
+            z0 + min(max(o.z, 0.0), z1 - z0),
+        ],
+        "size": size,
+        "rotation_y": math.radians(o.rotation_deg),
+        "color": o.color_hex if o.color_hex.startswith("#") else None,
+        "material": o.material or None,
+        "attributes": attributes,
+        "confidence": min(max(o.confidence, 0.0), 1.0),
+        "evidence": [{"frame_url": frame["url"], "timestamp_s": frame.get("timestamp_s")}] if frame else [],
     }
 
 
-def extract_scene(frames: list[dict], effort: Optional[str] = None, stats: Optional[dict] = None) -> dict:
-    """Returns a raw scene dict: {"rooms": [...], "doors": [...], "objects": [...]}.
+def _extract_room(room: dict, raw: dict, frames: list[dict], effort: str, notes: Optional[str]) -> tuple[list[dict], dict]:
+    indices = _room_frames(room, raw)
+    if not indices:
+        return [], {}
+    x0, z0, x1, z1 = room["rect"]
+    prompt = ROOM_PROMPT.format(
+        name=room["name"], w=x1 - x0, d=z1 - z0, h=room["height_m"],
+        sides=_sides_text(room, raw["links"]), catalog=_CATALOG_TEXT,
+    )
+    if notes:
+        prompt += f"\n\nNotes from the person who submitted this home (trust them over your estimates):\n{notes}"
+    content = llm.frame_blocks([(i, frames[i]) for i in indices], ROOM_IMAGE_PX)
+    content.append({"type": "text", "text": prompt})  # images first, instructions last
+    stats: dict = {}
+    answer = llm.parse(content, ExRoomObjects, effort, stats, retries=ROOM_RETRIES)
+    return [_object_raw(o, room, frames) for o in answer.objects if o.type != "door"], stats
 
-    `stats` (if given) is filled with latency, model and token usage.
+
+def _dedupe(objects: list[dict]) -> list[dict]:
+    """Rooms open to each other both see the shared objects; keep the more confident copy."""
+    kept: list[dict] = []
+    for o in sorted(objects, key=lambda o: -o["confidence"]):
+        if any(
+            k["type"] == o["type"] and k["room_name"] != o["room_name"]
+            and math.dist((k["position"][0], k["position"][2]), (o["position"][0], o["position"][2])) < DEDUPE_M
+            for k in kept
+        ):
+            continue
+        kept.append(o)
+    return kept
+
+
+def extract_scene(
+    frames: list[dict],
+    effort: Optional[str] = None,
+    stats: Optional[dict] = None,
+    floor_plans: Optional[list[str]] = None,
+    notes: Optional[str] = None,
+) -> dict:
+    """Returns a raw scene dict: {"rooms": [...], "doors": [...], "objects": [...], ...}.
+
+    `effort` is for the per-room calls (the plan pass uses ANTHROPIC_PLAN_EFFORT).
+    `floor_plans` are local image paths of a floor plan / map; `notes` is free text.
+    `stats` (if given) is filled with latency, model and token usage for both passes.
     """
-    scene = _call_claude(frames, effort or ANTHROPIC_EFFORT, stats if stats is not None else {})
-    if not scene.rooms:
-        raise ValueError("Claude found no rooms in the media")
-    return to_raw(scene, frames)
+    stats = stats if stats is not None else {}
+    room_effort = effort or ANTHROPIC_EFFORT
+
+    plan_stats: dict = {}
+    house = plan.extract_plan(frames, ANTHROPIC_PLAN_EFFORT, plan_stats, floor_plans=floor_plans, notes=notes)
+    raw = plan.assemble(house, frames)
+
+    t0 = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=ROOM_WORKERS) as pool:
+        results = list(pool.map(lambda r: _extract_room(r, raw, frames, room_effort, notes), raw["rooms"]))
+    rooms_s = round(time.perf_counter() - t0, 2)
+
+    raw["objects"] = _dedupe([o for objs, _ in results for o in objs])
+    room_stats = [s for _, s in results if s]
+    stats.update({
+        "model": plan_stats.get("model"),
+        "effort": f"plan {ANTHROPIC_PLAN_EFFORT} / rooms {room_effort}",
+        "plan_s": plan_stats.get("llm_s"),
+        "rooms_s": rooms_s,
+        "room_calls": len(room_stats),
+        "llm_s": round((plan_stats.get("llm_s") or 0) + rooms_s, 2),
+        "input_tokens": plan_stats.get("input_tokens", 0) + sum(s["input_tokens"] for s in room_stats),
+        "output_tokens": plan_stats.get("output_tokens", 0) + sum(s["output_tokens"] for s in room_stats),
+        "rooms": len(raw["rooms"]),
+        "levels": len({r["level"] for r in raw["rooms"]}),
+    })
+    return raw

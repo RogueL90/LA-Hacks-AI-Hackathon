@@ -72,6 +72,9 @@ class SpaceBuildRequest(BaseModel):
     job_id: str
     media_urls: list[str]
     trace: TraceCtx = Field(default_factory=TraceCtx)
+    # Optional extras beyond the walkthrough; both outrank the model's own estimates.
+    floor_plan_urls: list[str] = Field(default_factory=list)  # images of a floor plan / map
+    notes: Optional[str] = None  # free text, e.g. "2 storeys, 3 bed 2.5 bath, living room 4 x 5 m"
 
 
 class SpaceBuildResult(BaseModel):

@@ -42,10 +42,16 @@
     <div class="row">
       <label>Video or photos <input id="file" type="file" accept="video/*,image/*" multiple></label>
       <label>Max frames <input id="frames" type="number" min="1" max="60" value="30" style="width:90px"></label>
-      <label>Effort
+      <label>Effort (rooms)
         <select id="effort"><option>low</option><option>medium</option><option>high</option></select>
       </label>
       <button id="run">Run build</button>
+    </div>
+    <div class="row">
+      <label>Floor plan (optional) <input id="plan" type="file" accept="image/*" multiple></label>
+      <label style="flex:1">Notes (optional)
+        <textarea id="notes" rows="2" style="width:100%" placeholder="e.g. 2 storeys, 3 bed 2.5 bath, living room about 4 x 5 m"></textarea>
+      </label>
     </div>
     <p class="status" id="status"></p>
   </div>
@@ -64,7 +70,7 @@
 </main>
 <script>
 // List prices, USD per million tokens [input, output], keyed by the model that served the build.
-const PRICES = { "claude-opus-5-5": [4.0, 20.0], "claude-sonnet-5-5": [2.0, 10.0], "claude-haiku-5-5": [0.1, 0.5] };
+const PRICES = { "claude-fable-5-1": [10.0, 50.0], "claude-opus-5-5": [4.0, 20.0], "claude-sonnet-5-5": [2.0, 10.0], "claude-haiku-5-5": [0.1, 0.5] };
 const $ = (id) => document.getElementById(id);
 const runs = [];
 
@@ -83,14 +89,17 @@ $("run").onclick = async () => {
   const started = performance.now();
   try {
     $("status").textContent = `Uploading ${files.length} file(s)...`;
-    const urls = [];
-    for (const f of files) {
+    const upload = async (f) => {
       const form = new FormData();
       form.append("file", f);
       const res = await fetch("/media/upload", { method: "POST", body: form });
       if (!res.ok) throw new Error(`upload failed: HTTP ${res.status}`);
-      urls.push((await res.json()).url);
-    }
+      return (await res.json()).url;
+    };
+    const urls = [];
+    for (const f of files) urls.push(await upload(f));
+    const planUrls = [];
+    for (const f of $("plan").files) planUrls.push(await upload(f));
     const uploadS = (performance.now() - started) / 1000;
 
     $("status").textContent = "Building (frames, then Claude)...";
@@ -102,7 +111,13 @@ $("run").onclick = async () => {
       const res = await fetch("/debug/build", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ media_urls: urls, max_frames: +$("frames").value, effort: $("effort").value }),
+        body: JSON.stringify({
+          media_urls: urls,
+          max_frames: +$("frames").value,
+          effort: $("effort").value,
+          floor_plan_urls: planUrls,
+          notes: $("notes").value.trim() || null,
+        }),
       });
       data = await res.json();
     } finally { clearInterval(tick); }
@@ -117,7 +132,7 @@ $("run").onclick = async () => {
 
 function render(data, uploadS, wallS, files) {
   const s = data.stats || {};
-  const [pIn, pOut] = PRICES[s.model] || PRICES["claude-opus-5-5"];
+  const [pIn, pOut] = PRICES[s.model] || PRICES["claude-fable-5-1"];
   const cost = s.input_tokens != null ? (s.input_tokens * pIn + s.output_tokens * pOut) / 1e6 : null;
   $("status").innerHTML = data.ok
     ? `Done in ${wallS.toFixed(1)} s.`
@@ -126,7 +141,8 @@ function render(data, uploadS, wallS, files) {
   $("stats").innerHTML = [
     stat("upload (browser)", `${uploadS.toFixed(1)} s`),
     stat("frame extraction", s.frames_s != null ? `${s.frames_s} s` : "–"),
-    stat("Claude call", s.llm_s != null ? `${s.llm_s} s` : "–"),
+    stat("Claude: floor plan", s.plan_s != null ? `${s.plan_s} s` : "–"),
+    stat(`Claude: ${s.room_calls ?? "–"} rooms`, s.rooms_s != null ? `${s.rooms_s} s` : "–"),
     stat("scale + layout", s.post_s != null ? `${s.post_s} s` : "–"),
     stat("server total", s.total_s != null ? `${s.total_s} s` : "–"),
     stat("end to end", `${wallS.toFixed(1)} s`),
@@ -138,7 +154,7 @@ function render(data, uploadS, wallS, files) {
 
   const space = data.space;
   $("links").innerHTML = space
-    ? `<b>${esc(space.space_id)}</b>: ${space.rooms.length} rooms, ${space.doors.length} doors, ${space.objects.length} objects, scale ${esc(space.scale_method)} (${space.scale_confidence}) · <a href="${esc(space.viewer_url)}" target="_blank">open in viewer</a> · <a href="/spaces/${esc(space.space_id)}" target="_blank">JSON</a>`
+    ? `<b>${esc(space.space_id)}</b>: ${space.rooms.length} rooms on ${new Set(space.rooms.map((r) => r.level ?? 0)).size} floor(s), ${space.doors.length} doors, ${space.objects.length} objects, scale ${esc(space.scale_method)} (${space.scale_confidence}) · <a href="${esc(space.viewer_url)}" target="_blank">open in viewer</a> · <a href="/spaces/${esc(space.space_id)}" target="_blank">JSON</a>`
     : "";
   $("objects").innerHTML = space
     ? `<tr><th>id</th><th>label</th><th>room</th><th>size (m)</th><th>conf</th></tr>` +

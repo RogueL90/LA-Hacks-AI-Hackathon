@@ -4,7 +4,7 @@ import { Suspense, useState } from "react";
 import { Html } from "@react-three/drei";
 import type { Room, SpaceObject } from "../lib/types";
 import { objectColor, objectPosition, objectSize } from "../lib/defaults";
-import { MODEL_CATALOG } from "./catalog";
+import { modelFor } from "./catalog";
 import { GltfModel } from "./GltfModel";
 import { ProceduralObject } from "./Procedural";
 
@@ -50,7 +50,7 @@ export function ObjectMesh({ object, room, selected, night, accent, onSelect }: 
   const size = objectSize(object);
   const position = objectPosition(object);
   const color = objectColor(object);
-  const entry = MODEL_CATALOG[object.type];
+  const entry = modelFor(object);
   const ringRadius = Math.hypot(size[0], size[2]) / 2 + 0.08;
 
   return (

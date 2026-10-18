@@ -1,5 +1,6 @@
 // The whole space: lighting, rooms, objects, overlays, camera controls, post-processing.
-import { Suspense, useMemo } from "react";
+import { Suspense, useEffect, useMemo } from "react";
+import { useThree } from "@react-three/fiber";
 import { Environment, OrbitControls, SoftShadows } from "@react-three/drei";
 import { EffectComposer, N8AO, SMAA, ToneMapping } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
@@ -31,6 +32,17 @@ export function spaceBounds(space: Space) {
   };
 }
 
+/** Re-frames the camera when the visible floor changes (the Canvas only sets it once on mount). */
+function FitCamera({ center, span }: { center: [number, number, number]; span: number }) {
+  const camera = useThree((s) => s.camera);
+  const [cx, , cz] = center;
+  useEffect(() => {
+    camera.position.set(cx + span * 0.15, span * 0.95, cz + span * 1.05);
+    camera.lookAt(cx, 0, cz);
+  }, [camera, cx, cz, span]);
+  return null;
+}
+
 export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect }: Props) {
   const { center, span } = useMemo(() => spaceBounds(space), [space]);
   const objectsById = useMemo(() => new Map(space.objects.map((o) => [o.id, o])), [space.objects]);
@@ -59,6 +71,7 @@ export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect }: P
         shadow-camera-bottom={-span}
       />
 
+      <FitCamera center={center} span={span} />
       <SoftShadows size={18} samples={12} focus={0.6} />
 
       <group onPointerMissed={() => onSelect(null)}>

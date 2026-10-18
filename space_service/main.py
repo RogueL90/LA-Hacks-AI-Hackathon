@@ -108,6 +108,8 @@ class DebugBuildRequest(BaseModel):
     media_urls: list[str]
     max_frames: int = 30
     effort: Literal["low", "medium", "high"] = "low"
+    floor_plan_urls: list[str] = []
+    notes: Optional[str] = None
 
 
 @app.get("/test", response_class=HTMLResponse)
@@ -122,7 +124,9 @@ def debug_build(body: DebugBuildRequest) -> dict:
     job_id = f"test_{int(time.time())}"
     try:
         space = run_pipeline(
-            SpaceBuildRequest(job_id=job_id, media_urls=body.media_urls),
+            SpaceBuildRequest(
+                job_id=job_id, media_urls=body.media_urls, floor_plan_urls=body.floor_plan_urls, notes=body.notes
+            ),
             max_frames=max(1, min(body.max_frames, 60)),
             effort=body.effort,
             stats=stats,

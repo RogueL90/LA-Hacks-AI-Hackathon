@@ -160,13 +160,71 @@ function Shower({ size: [w, h, d] }: { size: Vec3 }) {
   );
 }
 
-function Counter({ size: [w, h, d] }: { size: Vec3 }) {
+/** Cabinets in the measured colour under a stone top: counters, islands, bathroom vanities. */
+function Counter({ size: [w, h, d], color }: { size: Vec3; color?: string }) {
   const topH = 0.04;
   return (
     <group>
-      <Block size={[w, h - topH, d - 0.03]} at={[0, -topH / 2, -0.015]}><Mat surface="plastic" /></Block>
+      <Block size={[w, h - topH, d - 0.03]} at={[0, -topH / 2, -0.015]}><Mat surface="plastic" color={color} /></Block>
       <Block size={[w + 0.02, topH, d + 0.02]} at={[0, h / 2 - topH / 2, 0]}><Mat surface="stone" /></Block>
     </group>
+  );
+}
+
+function Laundry({ size: [w, h, d], dryer }: { size: Vec3; dryer: boolean }) {
+  const r = Math.min(w, h) * 0.3;
+  return (
+    <group>
+      <Block size={[w, h, d]} at={[0, 0, 0]}><Mat surface="plastic" color="#f4f4f2" /></Block>
+      <mesh position={[0, -h * 0.05, d / 2 + 0.006]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[r, r, 0.012, 40]} />
+        <Mat surface={dryer ? "darkMetal" : "glossyBlack"} />
+      </mesh>
+      <Block size={[w * 0.9, 0.08, 0.01]} at={[0, h / 2 - 0.07, d / 2 + 0.005]}><Mat surface="darkMetal" /></Block>
+    </group>
+  );
+}
+
+function Crib({ size: [w, h, d], color }: { size: Vec3; color: string }) {
+  const y0 = -h / 2;
+  const slats = Math.max(6, Math.round(w / 0.07));
+  return (
+    <group>
+      <Block size={[w - 0.06, 0.12, d - 0.06]} at={[0, y0 + h * 0.35, 0]}><Mat surface="linen" /></Block>
+      {[-1, 1].map((sz) => (
+        <group key={sz}>
+          <Block size={[w, 0.04, 0.04]} at={[0, h / 2 - 0.02, (sz * (d - 0.04)) / 2]}><Oak color={color} /></Block>
+          {Array.from({ length: slats }, (_, i) => (
+            <Block key={i} size={[0.02, h * 0.62, 0.02]} at={[-w / 2 + ((i + 0.5) * w) / slats, h * 0.18, (sz * (d - 0.04)) / 2]}>
+              <Oak color={color} />
+            </Block>
+          ))}
+        </group>
+      ))}
+      {[-1, 1].map((sx) => (
+        <Block key={sx} size={[0.04, h, d]} at={[(sx * (w - 0.04)) / 2, 0, 0]}><Oak color={color} /></Block>
+      ))}
+    </group>
+  );
+}
+
+function RangeHood({ size: [w, h, d] }: { size: Vec3 }) {
+  const canopyH = Math.min(0.15, h * 0.4);
+  return (
+    <group>
+      <Block size={[w, canopyH, d]} at={[0, -h / 2 + canopyH / 2, 0]}><Mat surface="metal" /></Block>
+      <Block size={[w * 0.35, h - canopyH, d * 0.45]} at={[0, canopyH / 2, -d * 0.25]}><Mat surface="metal" /></Block>
+    </group>
+  );
+}
+
+function Curtain({ size: [w, h], color }: { size: Vec3; color: string }) {
+  // A thin hanging panel: curtains are drawn against the wall, never as a block in the room.
+  return (
+    <mesh castShadow>
+      <boxGeometry args={[w, h, 0.03]} />
+      <Fabric color={color} />
+    </mesh>
   );
 }
 
@@ -211,7 +269,33 @@ export function ProceduralObject({ type, size, color, night, headSign }: Props) 
     case "shower":
       return <Shower size={size} />;
     case "counter":
-      return <Counter size={size} />;
+    case "kitchen_island":
+    case "vanity":
+      return <Counter size={size} color={color} />;
+    case "washer":
+    case "dryer":
+      return <Laundry size={size} dryer={type === "dryer"} />;
+    case "crib":
+      return <Crib size={size} color={color} />;
+    case "range_hood":
+      return <RangeHood size={size} />;
+    case "curtain":
+      return <Curtain size={size} color={color} />;
+    case "dishwasher":
+    case "oven":
+    case "microwave":
+      return (
+        <group>
+          <Block size={size} at={[0, 0, 0]}><Mat surface="metal" /></Block>
+          <Block size={[w * 0.7, h * 0.45, 0.005]} at={[0, h * 0.05, d / 2 + 0.003]}><Mat surface="glossyBlack" /></Block>
+        </group>
+      );
+    case "light_switch":
+    case "thermostat":
+    case "smoke_detector":
+      return <Block size={size} at={[0, 0, 0]}><Mat surface="plastic" /></Block>;
+    case "handrail":
+      return <Block size={[w, Math.min(h, 0.05), Math.min(d, 0.05)]} at={[0, h / 2 - 0.025, 0]}><Oak /></Block>;
     case "stairs":
       return <Stairs size={size} />;
     case "rug":

@@ -8,9 +8,11 @@ SERVICE_DIR = Path(__file__).resolve().parent
 load_dotenv(SERVICE_DIR / ".env")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-fable-5-1")
 # low | medium | high: more effort = more thinking = slower and pricier.
-ANTHROPIC_EFFORT = os.getenv("ANTHROPIC_EFFORT", "low")
+ANTHROPIC_EFFORT = os.getenv("ANTHROPIC_EFFORT", "low")  # per-room object calls
+# The floor-plan pass decides the whole layout from every frame, so it thinks harder.
+ANTHROPIC_PLAN_EFFORT = os.getenv("ANTHROPIC_PLAN_EFFORT", "medium")
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
 # Absolute base URLs; Space.viewer_url / snapshot_url are built from these.

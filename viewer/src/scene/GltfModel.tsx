@@ -4,10 +4,10 @@
 import { useMemo } from "react";
 import * as THREE from "three";
 import { Clone, useGLTF } from "@react-three/drei";
-import { MODEL_CATALOG, type ModelEntry } from "./catalog";
+import { ALL_MODELS, type ModelEntry } from "./catalog";
 
 // Plain glTF (no Draco/meshopt), so no decoder is fetched from a CDN.
-for (const entry of Object.values(MODEL_CATALOG)) useGLTF.preload(entry.url, false, false);
+for (const url of new Set(ALL_MODELS.map((e) => e.url))) useGLTF.preload(url, false, false);
 
 function nativeBounds(scene: THREE.Object3D) {
   const box = new THREE.Box3().setFromObject(scene);

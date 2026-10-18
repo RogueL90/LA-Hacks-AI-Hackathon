@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from pipeline import llm
 
 PLAN_IMAGE_PX = 768  # all frames go in one request; Claude bills ~w*h/750 tokens per image
+FLOOR_PLAN_IMAGE_PX = 1568  # a plan's labels and dimensions need the full resolution Claude reads
 DEFAULT_DOOR_M = 0.81
 MIN_SHARED_WALL_M = 0.3  # rooms touching along less than this aren't really connected
 OVERLAP_EPS_M2 = 0.05
@@ -76,9 +77,34 @@ Every room must link to at least one other room on its level, unless it is alone
 FRAMES: for every frame, the room the camera is standing in (use the room names above)."""
 
 
-def extract_plan(frames: list[dict], effort: str, stats: Optional[dict] = None) -> ExPlan:
-    content = llm.frame_blocks(list(enumerate(frames)), PLAN_IMAGE_PX)
-    content.append({"type": "text", "text": PROMPT})  # images first, instructions last
+FLOOR_PLAN_PROMPT = """The first image(s), before the frames, are a floor plan / map of this same home supplied
+by its owner. Treat it as authoritative for which rooms exist, their sizes, their levels and how they
+connect; use the frames to name rooms, read floor materials and match frames to rooms. If the plan
+shows dimensions, use them. Keep the compass defined above (frame 0's view is +z), not the plan's."""
+
+
+def extract_plan(
+    frames: list[dict],
+    effort: str,
+    stats: Optional[dict] = None,
+    floor_plans: Optional[list[str]] = None,
+    notes: Optional[str] = None,
+) -> ExPlan:
+    """`floor_plans`: optional local image paths of a floor plan; `notes`: optional owner text."""
+    content: list[dict] = []
+    for i, path in enumerate(floor_plans or []):
+        content.append({"type": "text", "text": f"Floor plan image {i + 1}"})
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": llm.image_b64(path, FLOOR_PLAN_IMAGE_PX)},
+        })
+    content += llm.frame_blocks(list(enumerate(frames)), PLAN_IMAGE_PX)
+    prompt = PROMPT
+    if floor_plans:
+        prompt += "\n\n" + FLOOR_PLAN_PROMPT
+    if notes:
+        prompt += f"\n\nNotes from the person who submitted this home (trust them over your estimates):\n{notes}"
+    content.append({"type": "text", "text": prompt})  # images first, instructions last
     plan = llm.parse(content, ExPlan, effort, stats)
     if not plan.rooms:
         raise ValueError("Claude found no rooms in the media")

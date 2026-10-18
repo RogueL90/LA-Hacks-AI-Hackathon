@@ -22,7 +22,7 @@ def _media_url(name: str) -> str:
     return f"{LOCAL_MEDIA_PREFIX}{name}"
 
 
-def _resolve_local(url: str) -> Path:
+def resolve_local(url: str) -> Path:
     """Our own /files/media URLs map straight to disk; anything else is downloaded."""
     if url.startswith(LOCAL_MEDIA_PREFIX):
         path = storage.MEDIA_DIR / Path(url[len(LOCAL_MEDIA_PREFIX):]).name
@@ -72,7 +72,7 @@ def extract_frames(media_urls: list[str], job_id: str, max_frames: int = MAX_FRA
         remaining = max_frames - len(frames)
         if remaining <= 0:
             break
-        path = _resolve_local(url)
+        path = resolve_local(url)
         if path.suffix.lower() in VIDEO_SUFFIXES:
             frames += _video_frames(path, f"{safe_job}_{n}", remaining)
         else:

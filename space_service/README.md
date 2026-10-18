@@ -36,7 +36,7 @@ With `USE_PREBUILT=1` (default), `/spaces/build` returns the prebuilt demo space
 
 ## Env vars
 
-`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (default `claude-opus-5-5`), `ANTHROPIC_EFFORT` (`low`/`medium`/`high`), `SENTRY_DSN`, `PUBLIC_BASE_URL` (this service), `VIEWER_BASE_URL` (the viewer), `CORS_ORIGINS`, `USE_PREBUILT`.
+`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (default `claude-fable-5-1`), `ANTHROPIC_EFFORT` (`low`/`medium`/`high`), `SENTRY_DSN`, `PUBLIC_BASE_URL` (this service), `VIEWER_BASE_URL` (the viewer), `CORS_ORIGINS`, `USE_PREBUILT`.
 
 ## Endpoints
 
