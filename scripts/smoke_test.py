@@ -29,7 +29,10 @@ from uagents_core.contrib.protocols.payment import (
     payment_protocol_spec,
 )
 
-import run.bureau as live
+from run.bureau import agents_for
+
+LIVE_AGENTS, _ = agents_for("all")
+COORDINATOR = LIVE_AGENTS[0]
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "elder"
 VIDEO = "https://res.cloudinary.com/fetch-ai/video/upload/v1792289759/chat-images/ttxwol79hg5looafhcif.mov"
@@ -43,7 +46,7 @@ INTAKE = {
 user = Agent(name="smoke-user", seed=f"lmh-smoke-{secrets.token_hex(8)}")
 chat = Protocol(spec=chat_protocol_spec)
 pay = Protocol(spec=payment_protocol_spec, role="buyer")
-COORD = live.coordinator.address
+COORD = COORDINATOR.address
 seen = []
 
 
@@ -133,7 +136,7 @@ user.include(chat)
 user.include(pay)
 
 bureau = Bureau(port=8291)
-for a in live.AGENTS + [user]:
+for a in LIVE_AGENTS + [user]:
     bureau.add(a)
 
 if __name__ == "__main__":

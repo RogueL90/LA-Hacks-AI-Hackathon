@@ -31,9 +31,12 @@ from uagents_core.contrib.protocols.payment import (
     payment_protocol_spec,
 )
 
-import run.bureau as live
+from run.bureau import agents_for
 
-COORD = live.coordinator.address
+LIVE_AGENTS, _ = agents_for("all")
+COORDINATOR = LIVE_AGENTS[0]
+
+COORD = COORDINATOR.address
 VIDEO = "https://res.cloudinary.com/fetch-ai/video/upload/v1792289759/chat-images/ttxwol79hg5looafhcif.mov"
 PHOTO_1 = "https://res.cloudinary.com/fetch-ai/video/upload/so_20p,w_800/v1792289759/chat-images/ttxwol79hg5looafhcif.jpg"
 PHOTO_2 = "https://res.cloudinary.com/fetch-ai/video/upload/so_70p,w_800/v1792289759/chat-images/ttxwol79hg5looafhcif.jpg"
@@ -221,6 +224,6 @@ WANTED = [int(a) for a in sys.argv[1:]] or sorted(SCENARIOS)
 
 if __name__ == "__main__":
     bureau = Bureau(port=8292)
-    for a in live.AGENTS + [make_user(n) for n in WANTED]:
+    for a in LIVE_AGENTS + [make_user(n) for n in WANTED]:
         bureau.add(a)
     bureau.run()
