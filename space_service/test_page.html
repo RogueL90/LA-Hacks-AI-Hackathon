@@ -63,8 +63,8 @@
   </div>
 </main>
 <script>
-// Claude Sonnet 5.5 list price, USD per million tokens.
-const PRICE_IN = 2.0, PRICE_OUT = 10.0;
+// List prices, USD per million tokens [input, output], keyed by the model that served the build.
+const PRICES = { "claude-opus-5-5": [4.0, 20.0], "claude-sonnet-5-5": [2.0, 10.0], "claude-haiku-5-5": [0.1, 0.5] };
 const $ = (id) => document.getElementById(id);
 const runs = [];
 
@@ -117,7 +117,8 @@ $("run").onclick = async () => {
 
 function render(data, uploadS, wallS, files) {
   const s = data.stats || {};
-  const cost = s.input_tokens != null ? (s.input_tokens * PRICE_IN + s.output_tokens * PRICE_OUT) / 1e6 : null;
+  const [pIn, pOut] = PRICES[s.model] || PRICES["claude-opus-5-5"];
+  const cost = s.input_tokens != null ? (s.input_tokens * pIn + s.output_tokens * pOut) / 1e6 : null;
   $("status").innerHTML = data.ok
     ? `Done in ${wallS.toFixed(1)} s.`
     : `<span class="err">Build failed: ${esc(data.error)}</span>`;

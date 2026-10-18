@@ -19,10 +19,23 @@ def assign_ids(raw: dict) -> Space:
         used[base] += 1
         room_id = base if used[base] == 1 else f"{base}_{used[base]}"
         room_ids[r["name"]] = room_id
-        rooms.append({"id": room_id, "name": r["name"], "polygon": r["polygon"], "height_m": r["height_m"]})
+        rooms.append({
+            "id": room_id,
+            "name": r["name"],
+            "polygon": r["polygon"],
+            "height_m": r["height_m"],
+            "level": r.get("level", 0),
+            "floor_material": r.get("floor_material"),
+        })
 
     doors = [
-        {"id": f"door_{n:02d}", "room_id": room_ids[d["room_name"]], "position": d["position"], "width_m": round(d["width_m"], 3)}
+        {
+            "id": f"door_{n:02d}",
+            "room_id": room_ids[d["room_name"]],
+            "position": d["position"],
+            "width_m": round(d["width_m"], 3),
+            "kind": d.get("kind", "door"),
+        }
         for n, d in enumerate(raw["doors"], start=1)
     ]
 

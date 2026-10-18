@@ -23,6 +23,9 @@ html, body, #root { margin: 0; height: 100%; }
 .brand { font-weight: 600; font-size: 18px; }
 .mode-chip { color: #fff; font-weight: 600; font-size: 14px; padding: 6px 12px; border-radius: 999px; }
 .meta { color: var(--muted); font-size: 14px; }
+.levels { display: flex; gap: 4px; padding: 3px; border-radius: 999px; background: rgba(0, 0, 0, 0.06); pointer-events: auto; }
+.level { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+.level.active { background: #fff; color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
 
 .side-card {
   position: absolute; right: 16px; bottom: 16px; width: min(320px, calc(100% - 32px));

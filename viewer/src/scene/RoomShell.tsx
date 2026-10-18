@@ -2,12 +2,14 @@
 import { useMemo } from "react";
 import * as THREE from "three";
 import type { Door, Room } from "../lib/types";
-import { THEME } from "../modes/presets";
+import { meterBox, usePbr, type TextureKey } from "./materials";
 
 const WALL_THICKNESS = 0.08;
 const WALL_CUTAWAY = 0.7;
 const DOOR_ON_WALL_M = 0.3; // a door this close to a wall segment cuts an opening in it
 const MIN_PIECE_M = 0.02;
+const PLASTER_NORMAL_SCALE = new THREE.Vector2(0.5, 0.5);
+const CARPET_NORMAL_SCALE = new THREE.Vector2(0.35, 0.35);
 
 // Doors live on Space, not Room: a door on a shared wall must cut both rooms' walls,
 // so they are matched to wall segments by geometry rather than by room_id.
@@ -35,6 +37,59 @@ function solidPieces(length: number, gaps: [number, number][]) {
   }
   if (length - start > MIN_PIECE_M) pieces.push([start, length]);
   return pieces;
+}
+
+type FloorKind = "wood" | "tile" | "carpet" | "concrete";
+
+/** The detected floor material; rooms without one (the prebuilt demo) guess from their name. */
+function floorFor(room: Room): FloorKind {
+  switch (room.floor_material) {
+    case "wood":
+    case "laminate":
+    case "vinyl":
+      return "wood";
+    case "tile":
+    case "stone":
+      return "tile";
+    case "carpet":
+      return "carpet";
+    case "concrete":
+      return "concrete";
+  }
+  return /bath|kitchen|laundry|toilet|wc|shower/i.test(`${room.name} ${room.id}`) ? "tile" : "wood";
+}
+
+function TexturedFloor({ texture }: { texture: TextureKey }) {
+  const { map, normalMap, roughnessMap } = usePbr(texture);
+  return <meshStandardMaterial map={map} normalMap={normalMap} roughnessMap={roughnessMap} />;
+}
+
+function CarpetFloor() {
+  // Carpet = the fabric weave as surface relief on a soft grey.
+  const { normalMap, roughnessMap } = usePbr("fabric");
+  return <meshStandardMaterial color="#c4bdb2" normalMap={normalMap} roughnessMap={roughnessMap} normalScale={CARPET_NORMAL_SCALE} />;
+}
+
+function FloorMaterial({ kind }: { kind: FloorKind }) {
+  if (kind === "carpet") return <CarpetFloor />;
+  if (kind === "concrete") return <meshStandardMaterial color="#bdb9b2" roughness={0.85} />;
+  return <TexturedFloor texture={kind === "tile" ? "tileFloor" : "woodFloor"} />;
+}
+
+function Wall({ length, height, position, rotationY }: { length: number; height: number; position: [number, number, number]; rotationY: number }) {
+  const plaster = usePbr("plaster");
+  const geometry = useMemo(() => meterBox(length, height, WALL_THICKNESS), [length, height]);
+  return (
+    <mesh geometry={geometry} position={position} rotation={[0, rotationY, 0]} castShadow receiveShadow>
+      {/* Plaster relief only: the texture's own grey colour made the walls look dirty. */}
+      <meshStandardMaterial
+        normalMap={plaster.normalMap}
+        roughnessMap={plaster.roughnessMap}
+        color="#fbf8f3"
+        normalScale={PLASTER_NORMAL_SCALE}
+      />
+    </mesh>
+  );
 }
 
 export function RoomShell({ room, doors }: { room: Room; doors: Door[] }) {
@@ -78,15 +133,13 @@ export function RoomShell({ room, doors }: { room: Room; doors: Door[] }) {
 
   return (
     <group name={room.id}>
+      {/* ShapeGeometry UVs are the shape's coordinates in meters, so tiling is real-world sized. */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <shapeGeometry args={[floorShape]} />
-        <meshStandardMaterial color={THEME.floor} roughness={0.9} />
+        <FloorMaterial kind={floorFor(room)} />
       </mesh>
-      {walls.map((w) => (
-        <mesh key={w.key} position={w.position} rotation={[0, w.rotationY, 0]} castShadow receiveShadow>
-          <boxGeometry args={[w.length, w.height, WALL_THICKNESS]} />
-          <meshStandardMaterial color={THEME.wall} roughness={0.95} />
-        </mesh>
+      {walls.map(({ key, ...w }) => (
+        <Wall key={key} {...w} />
       ))}
     </group>
   );

@@ -12,6 +12,7 @@ import time
 from typing import Optional
 
 from config import DEMO_SPACE_ID, PREBUILT_DIR, PUBLIC_BASE_URL, USE_PREBUILT, VIEWER_BASE_URL
+from pipeline.catalog import MOVABLE
 from schemas import Space, SpaceBuildRequest
 
 
@@ -27,6 +28,8 @@ def load_prebuilt(space_id: str = DEMO_SPACE_ID) -> Space:
     raw = json.loads((PREBUILT_DIR / "demo_space.json").read_text(encoding="utf-8"))
     raw["space_id"] = space_id
     raw["viewer_url"], raw["snapshot_url"] = public_urls(space_id)
+    for o in raw["objects"]:  # same derived attribute the real pipeline adds
+        o.setdefault("attributes", {}).setdefault("is_movable", o["type"] in MOVABLE)
     return Space.model_validate(raw)
 
 

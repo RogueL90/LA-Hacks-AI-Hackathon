@@ -8,7 +8,7 @@ SERVICE_DIR = Path(__file__).resolve().parent
 load_dotenv(SERVICE_DIR / ".env")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5")
 # low | medium | high: more effort = more thinking = slower and pricier.
 ANTHROPIC_EFFORT = os.getenv("ANTHROPIC_EFFORT", "low")
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")

@@ -1,8 +1,10 @@
-// The whole space: lighting, rooms, objects, overlays, camera controls.
-import { useMemo } from "react";
-import { ContactShadows, OrbitControls } from "@react-three/drei";
+// The whole space: lighting, rooms, objects, overlays, camera controls, post-processing.
+import { Suspense, useMemo } from "react";
+import { Environment, OrbitControls, SoftShadows } from "@react-three/drei";
+import { EffectComposer, N8AO, SMAA, ToneMapping } from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
 import type { OverlaySet, Space } from "../lib/types";
-import type { ModePreset } from "../modes/presets";
+import { NEUTRAL_ACCENT, type ModePreset } from "../modes/presets";
 import { RoomShell } from "./RoomShell";
 import { ObjectMesh } from "./ObjectMesh";
 import { OverlayLayer } from "../overlays/OverlayLayer";
@@ -33,14 +35,21 @@ export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect }: P
   const { center, span } = useMemo(() => spaceBounds(space), [space]);
   const objectsById = useMemo(() => new Map(space.objects.map((o) => [o.id, o])), [space.objects]);
   const doors = useMemo(() => space.doors ?? [], [space.doors]);
+  const roomsById = useMemo(() => new Map(space.rooms.map((r) => [r.id, r])), [space.rooms]);
   const night = preset?.night ?? false;
+  const accent = preset?.accent ?? NEUTRAL_ACCENT;
 
   return (
     <>
-      <hemisphereLight args={["#fff8ee", "#d8cfc2", night ? 0.35 : 0.9]} />
+      {/* Image-based light from a real interior (CC0 Poly Haven HDRI); the page background stays ours. */}
+      <Suspense fallback={null}>
+        <Environment files="/hdri/lythwood_room.hdr" environmentIntensity={night ? 0.18 : 0.75} />
+      </Suspense>
+      <hemisphereLight args={["#fff8ee", "#d8cfc2", night ? 0.05 : 0.15]} />
+      {/* The sun: the environment light casts no shadows, this one does. */}
       <directionalLight
         position={[center[0] + span * 0.4, span * 1.2, center[2] + span * 0.6]}
-        intensity={night ? 0.5 : 1.6}
+        intensity={night ? 0.35 : 1.3}
         color="#ffe9cc"
         castShadow
         shadow-mapSize={[2048, 2048]}
@@ -50,19 +59,42 @@ export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect }: P
         shadow-camera-bottom={-span}
       />
 
+      <SoftShadows size={18} samples={12} focus={0.6} />
+
       <group onPointerMissed={() => onSelect(null)}>
-        {space.rooms.map((room) => (
-          <RoomShell key={room.id} room={room} doors={doors} />
-        ))}
+        <Suspense fallback={null}>
+          {space.rooms.map((room) => (
+            <RoomShell key={room.id} room={room} doors={doors} />
+          ))}
+        </Suspense>
         {space.objects.map((o) => (
-          <ObjectMesh key={o.id} object={o} selected={o.id === selectedId} onSelect={onSelect} />
+          <ObjectMesh
+            key={o.id}
+            object={o}
+            room={roomsById.get(o.room_id)}
+            selected={o.id === selectedId}
+            night={night}
+            accent={accent}
+            onSelect={onSelect}
+          />
         ))}
       </group>
 
       {overlaySet && <OverlayLayer overlays={overlaySet.overlays} objectsById={objectsById} preset={preset} />}
 
-      <ContactShadows position={[center[0], -0.001, center[2]]} scale={span * 1.6} opacity={0.35} blur={2.5} far={4} />
+      {/* Ground that only shows the house's real shadow (ContactShadows drew stray blobs with SoftShadows). */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[center[0], -0.002, center[2]]} receiveShadow>
+        <planeGeometry args={[span * 3, span * 3]} />
+        <shadowMaterial opacity={0.16} />
+      </mesh>
       <OrbitControls target={center} maxPolarAngle={Math.PI / 2.2} minDistance={2} maxDistance={span * 3} makeDefault />
+
+      {/* MSAA off: it conflicts with N8AO, and SMAA handles the edges. */}
+      <EffectComposer multisampling={0}>
+        <N8AO halfRes aoRadius={0.6} distanceFalloff={1} intensity={2.5} quality="medium" />
+        <ToneMapping mode={ToneMappingMode.AGX} />
+        <SMAA />
+      </EffectComposer>
     </>
   );
 }

@@ -1,6 +1,6 @@
 """Claude structured extraction: frames -> rough rooms, doors, objects (meters).
 
-Uses ANTHROPIC_MODEL (Sonnet) with structured outputs. The prompt asks Claude to
+Uses ANTHROPIC_MODEL (Opus 5.5 by default) with structured outputs. The prompt asks Claude to
 use reference objects for scale: interior door ~2.03 x 0.81 m, counter ~0.91 m,
 outlet cover ~0.11 m. Each object records the frame + timestamp it was seen in.
 
@@ -13,20 +13,20 @@ import base64
 import io
 import math
 import time
-from typing import Optional
+from typing import Literal, Optional
 
 from PIL import Image
 from pydantic import BaseModel
 
 from config import ANTHROPIC_API_KEY, ANTHROPIC_EFFORT, ANTHROPIC_MODEL
+from pipeline.catalog import EXTRACTABLE_TYPES, GROUPS, MOVABLE
 
-OBJECT_CATALOG = [
-    "bed", "nightstand", "sofa", "armchair", "coffee_table", "dining_table", "chair",
-    "desk", "tv", "tv_stand", "bookshelf", "dresser", "wardrobe", "rug", "lamp_floor",
-    "lamp_table", "ceiling_light", "plant", "toilet", "sink", "bathtub", "shower",
-    "mirror", "stairs", "outlet", "cord", "window", "door", "refrigerator", "stove",
-    "counter", "cabinet", "laptop", "painting", "clutter",
-]
+# Yes/no facts Claude lists only when true; to_raw expands them into the attribute
+# names the specialists read. A list keeps output short: most objects have none.
+FLAGS = ("loose", "covered", "anchored", "grab_bar", "sharp_corners", "night_light")
+ObjectType = Literal[EXTRACTABLE_TYPES]  # type: ignore[valid-type]
+Flag = Literal[FLAGS]  # type: ignore[valid-type]
+Shape = Literal["rectangular", "round", "oval", "l_shaped", "irregular"]
 WALLS = ("x_min", "x_max", "z_min", "z_max")
 LLM_IMAGE_PX = 768  # longest edge; Claude bills ~w*h/750 tokens per image (~450 for 768x432)
 LLM_TIMEOUT_S = 90.0  # keeps the whole build inside the 120 s budget
@@ -53,7 +53,7 @@ class ExDoor(BaseModel):
 
 
 class ExObject(BaseModel):
-    type: str  # one of OBJECT_CATALOG
+    type: ObjectType
     label: str
     room_name: str
     x: float  # footprint center on the floor plan
@@ -63,12 +63,12 @@ class ExObject(BaseModel):
     height_m: float
     depth_m: float  # along z before rotation
     rotation_deg: float  # about the vertical axis; 0, 90, 180 or 270
+    shape: Shape  # footprint shape from above
     color_hex: str
     material: str
-    brand_guess: str
-    is_loose: bool
-    has_cover: bool
-    sharp_corners: bool
+    model_guess: str
+    flags: list[Flag]
+    seat_height_m: float  # toilets, chairs, sofas, beds; 0 for everything else
     confidence: float
     frame_index: int
 
@@ -78,6 +78,8 @@ class ExScene(BaseModel):
     doors: list[ExDoor]
     objects: list[ExObject]
 
+
+_CATALOG_TEXT = "\n".join(f"  {group}: {', '.join(types)}" for group, types in GROUPS.items())
 
 PROMPT = f"""You are measuring a home from walkthrough frames so it can be rebuilt as a 3D floor plan.
 The frames are numbered in the order given. Work in meters on ONE shared top-down floor plan:
@@ -93,12 +95,24 @@ room's rectangle it sits on: "x_min", "x_max", "z_min" or "z_max". "offset_m" is
 low-coordinate end of that wall to the center of the door. Do NOT also list doors as objects.
 
 OBJECTS: list each physical object ONCE, even if it appears in many frames; use frame_index of the
-clearest frame. type must be one of: {", ".join(t for t in OBJECT_CATALOG if t != "door")}.
-Use "clutter" for loose items on the floor. Give the footprint center (x, z) on the shared plan,
-y_bottom (0 for things standing on the floor; e.g. 0.5 for a TV on a stand, 1.4 for a painting),
-and real-world width/height/depth. rotation_deg is 0 when the object's front faces +z.
-Fill brand_guess with "" if unknown. is_loose is for rugs/mats that can slip, has_cover for outlets,
-sharp_corners for tables and furniture with hard corners. confidence is 0..1.
+clearest frame. Go room by room and include small things too: outlets, switches, cords, lights,
+smoke detectors, grab bars, toys, clutter. Pick the most specific type from this catalog:
+{_CATALOG_TEXT}
+Use "light" for fixed light fixtures (ceiling, wall, plug-in night lights) and the lamp types for lamps.
+Use "clutter" for loose items lying on the floor, and "other" only when nothing above fits (then
+make the label specific). Give the footprint center (x, z) on the shared plan, y_bottom (0 for
+things standing on the floor; e.g. 0.5 for a TV on a stand, 1.4 for a painting, 0.9 for a
+microwave on a counter), and real-world width/height/depth. rotation_deg is 0 when the object's
+front faces +z. shape is the footprint seen from above. model_guess is the brand/model if you can
+tell (e.g. "IKEA Kallax"), else "". seat_height_m is the seat height of toilets, chairs, sofas and
+beds, else 0. confidence is 0..1.
+flags: list only the ones that are clearly true, usually none:
+  loose          rug or mat that can slip (no visible backing or pad)
+  covered        outlet has a safety cover
+  anchored       tall furniture or TV visibly strapped or bolted to the wall
+  grab_bar       a grab bar is mounted at this tub, shower or toilet
+  sharp_corners  hard, square corners (tables, counters, dressers)
+  night_light    a light that stays on low at night or is motion-activated
 
 SCALE: estimate sizes from reference objects: a standard interior door is 2.03 m tall x 0.81 m wide,
 a kitchen counter is 0.91 m high, an outlet cover is 0.11 m tall, a standard bed is ~2.0 m long.
@@ -192,16 +206,27 @@ def to_raw(scene: ExScene, frames: list[dict]) -> dict:
             continue  # doors are wall openings, not furniture
         size = [max(o.width_m, 0.01), max(o.height_m, 0.01), max(o.depth_m, 0.01)]
         frame = frames[o.frame_index] if 0 <= o.frame_index < len(frames) else None
+        flags = set(o.flags)
+        # Attribute names are the ones Shresth's specialists read (elder / baby / claim / transformer).
         attributes = {
-            "is_loose": o.is_loose,
-            "has_cover": o.has_cover,
-            "sharp_corners": o.sharp_corners,
+            "is_loose": "loose" in flags,
+            "covered": "covered" in flags,
+            "anchored": "anchored" in flags,
+            "grab_bar": "grab_bar" in flags,
+            "sharp_corners": "sharp_corners" in flags,
+            "night_light": "night_light" in flags,
+            "is_movable": o.type in MOVABLE,
+            "shape": o.shape,
             "height_from_floor": round(max(o.y_bottom, 0.0), 3),
         }
-        if o.brand_guess:
-            attributes["brand_guess"] = o.brand_guess
+        if o.seat_height_m > 0:
+            attributes["seat_height_m"] = round(o.seat_height_m, 3)
+        if o.type == "toilet":
+            attributes["toilet_shape"] = "elongated" if o.shape == "oval" else "round"
+        if o.model_guess:
+            attributes["model_guess"] = o.model_guess
         objects.append({
-            "type": o.type if o.type in OBJECT_CATALOG else "clutter",
+            "type": o.type,
             "label": o.label.strip() or o.type.replace("_", " "),
             "room_name": o.room_name,
             "position": [o.x, max(o.y_bottom, 0.0) + size[1] / 2, o.z],

@@ -51,7 +51,22 @@ Target: **≤ 120 s** per build. Kenil will profile this — expect him to ask w
 
 ### Object catalog (map each to a 3D model)
 
-`bed, nightstand, sofa, armchair, coffee_table, dining_table, chair, desk, tv, tv_stand, bookshelf, dresser, wardrobe, rug, lamp_floor, lamp_table, ceiling_light, plant, toilet, sink, bathtub, shower, mirror, stairs, outlet, cord, window, door, refrigerator, stove, counter, cabinet, laptop, painting, clutter`
+Source of truth: `space_service/pipeline/catalog.py` (96 types, with layout rules). `door` is returned as a Door, never an object.
+
+- **living room:** sofa, sectional_sofa, armchair, recliner, ottoman, coffee_table, side_table, console_table, tv, tv_stand, bookshelf, shelf, cabinet, bench, fireplace, piano
+- **bedroom:** bed, crib, nightstand, dresser, wardrobe, vanity, changing_table, toy_box, toys
+- **dining and office:** dining_table, chair, high_chair, stool, desk, office_chair
+- **kitchen:** counter, kitchen_island, refrigerator, stove, oven, microwave, dishwasher, sink, range_hood, small_appliance, trash_can
+- **laundry and utility:** washer, dryer, water_heater, laundry_basket, ironing_board
+- **bathroom:** toilet, bathtub, shower, bath_mat, towel_rack, grab_bar, shower_seat
+- **lighting:** light, lamp_floor, lamp_table
+- **decor:** rug, plant, painting, mirror, curtain, clock, decor
+- **electronics:** laptop, monitor, computer, game_console, speaker, printer, router, fan, space_heater, air_conditioner
+- **building:** window, stairs, step, handrail, radiator, outlet, light_switch, thermostat, smoke_detector
+- **safety and mobility:** stair_gate, walker, wheelchair
+- **storage and misc:** box, shoe_rack, coat_rack, pet_bed, bicycle, exercise_equipment, cord, clutter, other
+
+Attributes the extractor sets (names match what the specialists read): `is_loose`, `covered`, `anchored`, `grab_bar`, `sharp_corners`, `night_light`, `is_movable`, `shape`, `height_from_floor`, plus `seat_height_m`, `toilet_shape` and `model_guess` when known.
 
 Use free CC0/CC-BY glTF packs (Kenney Furniture Kit, Poly Pizza; Sketchfab only if license allows). Scale each model to the object's `size`, tint with `color`.
 

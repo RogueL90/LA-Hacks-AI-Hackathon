@@ -43,6 +43,8 @@ class Door(BaseModel):
     room_id: str
     position: list[float]
     width_m: float
+    # "open" = no wall at all between the two rooms (open-plan); width_m is the whole shared wall.
+    kind: Literal["door", "doorway", "open"] = "door"
 
 
 class Room(BaseModel):
@@ -50,6 +52,8 @@ class Room(BaseModel):
     name: str
     polygon: list[list[float]]  # floor outline [[x, z], ...]
     height_m: float = 2.5
+    level: int = 0  # 0 = entry floor, 1 = upstairs, -1 = basement
+    floor_material: Optional[str] = None  # wood | laminate | vinyl | tile | stone | carpet | concrete
 
 
 class Space(BaseModel):

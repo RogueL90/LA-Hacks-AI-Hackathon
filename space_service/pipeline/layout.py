@@ -9,20 +9,16 @@
 """
 import math
 
+from pipeline.catalog import CEILING_TYPES, FLOOR_TYPES, NO_COLLIDE, NO_WALL_SNAP, WALL_MOUNTED
+
 GRID_M = 0.05
 WALL_MERGE_M = 0.3  # wall coordinates closer than this are the same wall
 WALL_SNAP_M = 0.3  # objects this close to a wall get pushed flush against it
 MIN_ROOM_M = 1.0
 DOOR_CENTER_Y = 1.015  # half a standard 2.03 m door
 
-FLOOR_TYPES = {
-    "bed", "nightstand", "sofa", "armchair", "coffee_table", "dining_table", "chair", "desk",
-    "tv_stand", "bookshelf", "dresser", "wardrobe", "rug", "lamp_floor", "plant", "toilet",
-    "bathtub", "shower", "stairs", "refrigerator", "stove", "counter", "cabinet", "clutter", "cord",
-}
-WALL_MOUNTED = {"painting", "mirror", "window", "outlet"}
-NO_WALL_SNAP = {"rug", "cord", "clutter", "chair", "coffee_table", "dining_table", "ceiling_light", "laptop", "lamp_table"}
-NO_COLLIDE = {"rug", "cord", "ceiling_light", "outlet", "painting", "mirror", "window"}
+# A "light" whose top is this close to the ceiling is a ceiling fixture.
+CEILING_SNAP_M = 0.5
 
 
 def _snap(v: float) -> float:
@@ -49,9 +45,16 @@ def _solve_rooms(rooms: list[dict]) -> tuple[float, float]:
     for r in rooms:
         x0, z0, x1, z1 = r["rect"]
         r["rect"] = [x0 - min_x, z0 - min_z, x1 - min_x, z1 - min_z]
-    xs = _merge_coords([c for r in rooms for c in (r["rect"][0], r["rect"][2])])
-    zs = _merge_coords([c for r in rooms for c in (r["rect"][1], r["rect"][3])])
+    # Merge per floor: an upstairs wall happening to sit near a downstairs one is not the same wall.
+    merged: dict[int, tuple[dict, dict]] = {}
+    for level in {r.get("level", 0) for r in rooms}:
+        same = [r for r in rooms if r.get("level", 0) == level]
+        merged[level] = (
+            _merge_coords([c for r in same for c in (r["rect"][0], r["rect"][2])]),
+            _merge_coords([c for r in same for c in (r["rect"][1], r["rect"][3])]),
+        )
     for r in rooms:
+        xs, zs = merged[r.get("level", 0)]
         x0, z0, x1, z1 = r["rect"]
         nx0, nx1, nz0, nz1 = xs[x0], xs[x1], zs[z0], zs[z1]
         # Merging must never collapse a room; fall back to a plain grid snap.
@@ -175,7 +178,9 @@ def solve(raw: dict) -> dict:
         h = o["size"][1]
         if o["type"] in FLOOR_TYPES:
             o["position"][1] = h / 2
-        elif o["type"] == "ceiling_light":
+        elif o["type"] in CEILING_TYPES or (
+            o["type"] == "light" and o["position"][1] + h / 2 > room["height_m"] - CEILING_SNAP_M
+        ):
             o["position"][1] = room["height_m"] - h / 2
         else:
             o["position"][1] = min(max(o["position"][1], h / 2), room["height_m"] - h / 2)
@@ -189,6 +194,8 @@ def solve(raw: dict) -> dict:
     for o in raw["objects"]:
         o["position"] = [round(c, 3) for c in o["position"]]
         o["size"] = [round(c, 3) for c in o["size"]]
+        # Recomputed after snapping: baby mode reads it for reach checks.
+        o.setdefault("attributes", {})["height_from_floor"] = round(max(o["position"][1] - o["size"][1] / 2, 0.0), 3)
         o["rotation_y"] = round(o["rotation_y"], 4)
 
     by_name = {r["name"].lower(): r for r in rooms}

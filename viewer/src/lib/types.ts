@@ -28,6 +28,7 @@ export interface Door {
   room_id: string;
   position: number[];
   width_m: number;
+  kind?: "door" | "doorway" | "open"; // "open": no wall between the rooms (open-plan)
 }
 
 export interface Room {
@@ -35,6 +36,8 @@ export interface Room {
   name: string;
   polygon: number[][]; // [[x, z], ...]
   height_m?: number;
+  level?: number; // 0 = entry floor, 1 = upstairs, -1 = basement
+  floor_material?: string | null; // wood | laminate | vinyl | tile | stone | carpet | concrete
 }
 
 export interface Space {
