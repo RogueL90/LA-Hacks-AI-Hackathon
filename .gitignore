@@ -1,11 +1,25 @@
+# secrets
 .env
 .env.*
 !.env.example
+*.seed
+
+# python
 .venv/
 __pycache__/
+*.pyc
 *.log
 *_data.json
 logs/
 agents/actions/product_finder/cache/*.json
 agents/actions/insurance_filer/out/*
 !agents/actions/insurance_filer/out/.gitkeep
+
+# runtime data written by the Space Service
+space_service/data/
+
+# node
+node_modules/
+dist/
+.vercel/
+*.tsbuildinfo

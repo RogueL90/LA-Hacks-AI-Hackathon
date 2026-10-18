@@ -1,0 +1,10 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
+python-dotenv==1.0.1
+python-multipart==0.0.20
+pillow==11.0.0
+httpx==0.28.1
+# pipeline (Sun 12 AM checkpoint)
+anthropic==1.15.0
+# snapshots: playwright==1.49.1  (then: python -m playwright install chromium)
