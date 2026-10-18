@@ -73,7 +73,7 @@ def _form_fields(reply: Reply) -> list[str]:
 
 def _results_mode(reply: Reply) -> str | None:
     custom = reply.card("custom")
-    return _title(custom) if custom else None
+    return _title(custom).split(" · ")[0] if custom else None
 
 
 def msg(text: str = "", links: list[str] | None = None, start: bool = False) -> ChatMessage:

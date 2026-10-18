@@ -17,6 +17,7 @@ agent = Agent(
     name="Home 3D Space Builder",
     seed=config.seed("space_builder"),
     mailbox=True,
+    handle_messages_concurrently=True,  # one slow user must not block the others
     publish_agent_details=True,
     readme_path=str(Path(__file__).with_name("README.md")),
     description="Last Mile Home Space Builder: turns a short home video or photos into a 3D model where every object has a real type, size and position.",

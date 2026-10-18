@@ -20,6 +20,7 @@ def make_specialist(key: str, name: str, mode: str, description: str, analyze: A
         name=name,
         seed=config.seed(key),
         mailbox=True,
+        handle_messages_concurrently=True,  # one slow user must not block the others
         publish_agent_details=True,
         readme_path=str(folder / "README.md"),
         description=description,

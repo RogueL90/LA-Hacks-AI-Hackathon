@@ -63,6 +63,7 @@ coordinator = Agent(
     name="Last Mile Home",
     seed=config.seed("coordinator"),
     mailbox=True,
+    handle_messages_concurrently=True,  # one slow user must not block the others
     publish_agent_details=True,
     readme_path=str(Path(__file__).with_name("README.md")),
     description=(
@@ -129,6 +130,19 @@ ANSWER_KEYS = ["person", "age", "mobility_aid", "night_trips", "child_age_months
                "requirements", "style", "budget_usd", "policy_type", "zip_code"]
 REQUIRED = {"elder": ["mobility_aid"], "baby": ["child_age_months"],
             "transform": ["goal", "room_id"], "claim": ["policy_type", "zip_code"]}
+MODE_KEYS = {
+    "elder": {"person", "age", "mobility_aid", "night_trips", "budget_usd"},
+    "baby": {"child_age_months", "budget_usd"},
+    "transform": {"goal", "room_id", "requirements", "style", "budget_usd"},
+    "claim": {"policy_type", "zip_code"},
+}
+
+
+def child_months(text: str) -> int | None:
+    number = _number(text, float)
+    if number is None:
+        return 0 if "newborn" in text.lower() else None
+    return round(number * 12) if "year" in text.lower() else round(number)
 
 
 def has_answers(state: dict, mode: str) -> bool:
@@ -138,7 +152,14 @@ def has_answers(state: dict, mode: str) -> bool:
 
 async def route(ctx: Context, sender: str, state: dict, files: list[dict], selection: dict):
     action = selection.get("action")
-    answers = {k: v for k, v in selection.items() if k in ANSWER_KEYS}
+    mode = selection.get("mode")
+    if mode == "baby" and not selection.get("child_age_months") and selection.get("age"):
+        # A child's age that landed in the adult "age" field: "18 months", "2 years", "1-year-old".
+        months = child_months(str(selection["age"]))
+        if months is not None:
+            selection["child_age_months"] = months
+    allowed = MODE_KEYS.get(mode, set(ANSWER_KEYS))
+    answers = {k: v for k, v in selection.items() if k in ANSWER_KEYS and k in allowed}
     if answers:
         state.setdefault("answers", {}).update(answers)
     if selection.get("mode") in cards.MODES and action in ("choose_mode", "submit_intake"):
@@ -166,7 +187,13 @@ async def route(ctx: Context, sender: str, state: dict, files: list[dict], selec
     elif action == "finding_detail":
         await on_finding_detail(ctx, sender, state, selection.get("finding_id", ""))
     elif action == "approve_plan":
+        if isinstance(selection.get("fix_ids"), list) and selection["fix_ids"]:
+            state["chosen_fixes"] = selection["fix_ids"]
         await request_fee(ctx, sender, state)
+    elif action == "payment_opened":
+        await send(ctx, sender, text_message("Finish the checkout in the new tab, then tap I've paid."))
+    elif action == "show_results" and state.get("result"):
+        await show_results(ctx, sender, state, "Here are your results again.")
     elif action == "check_payment":
         await check_payment(ctx, sender, state)
     elif action == "decline_plan":
@@ -214,6 +241,7 @@ async def on_media(ctx: Context, sender: str, state: dict, files: list[dict], mo
         "result": None,
         "payment": None,
     })
+    state["stats"] = f"{len(space.rooms)} rooms · {len(space.objects)} objects" + (" · demo measurements" if state["prebuilt"] else "")
     intro = f"Your home is mapped: {len(space.rooms)} rooms and {len(space.objects)} objects."
     if state["prebuilt"]:
         intro += " (Live 3D building is still in progress, so this run uses our demo apartment's measurements.)"
@@ -231,7 +259,7 @@ async def show_modes(ctx: Context, sender: str, state: dict, narration: str):
     if not state.get("frames"):
         await send(ctx, sender, text_message(GREETING))
         return
-    await send_card(ctx, sender, state, narration, "carousel", cards.space_ready(state["frames"], state.get("viewer_url")))
+    await send_card(ctx, sender, state, narration, "carousel", cards.space_ready(state["frames"], state.get("stats", "")))
 
 
 async def on_choose_mode(ctx: Context, sender: str, state: dict, mode: str, intro: str = ""):
@@ -326,9 +354,14 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict, int
         await send(ctx, sender, text_message(result.summary))
         return
     next_step = ("Next I'll price each item at today's replacement cost and build your claim package."
-                 if mode == "claim" else "Approve the plan and I'll find products that fit and prepare checkout links.")
-    await send_card(ctx, sender, state, f"{intro} {result.summary} {next_step}".strip(), "custom",
-                    cards.results_card(result, state["frames"][mode], None if mode == "claim" else fee_label()))
+                 if mode == "claim" else "Pick the fixes you want and approve; I'll find products that fit.")
+    await show_results(ctx, sender, state, f"{intro} {result.summary} {next_step}".strip())
+
+
+async def show_results(ctx: Context, sender: str, state: dict, narration: str):
+    result = ModeResult.model_validate(state["result"])
+    fee = None if result.mode == "claim" else fee_label()
+    await send_card(ctx, sender, state, narration, "custom", cards.results_card(result, state["frames"][result.mode], fee))
 
 
 async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: str):
@@ -337,27 +370,12 @@ async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: 
     if not finding:
         await show_modes(ctx, sender, state, "I couldn't find that item. Pick a mode to start again.")
         return
-    rows = [{"label": m.name.replace("_", " ").capitalize(),
-             "value": f"{m.value:g} {m.unit}" + (f" (needs {m.required:g} {m.unit})" if m.required is not None else "")}
-            for m in finding.measurements]
-    if finding.fix_summary:
-        rows.append({"label": "Fix", "value": finding.fix_summary})
-    if finding.kind == "hazard":
-        rows.append({"label": "Severity", "value": f"{finding.severity} of 5"})
-    payload = {
-        "title": finding.title,
-        "hero_image": state["frames"][result.mode],
-        "summary_rows": rows or [{"label": "Note", "value": finding.title}],
-        "ctas": [
-            {"label": "Approve fix plan", "primary": True, "selection": {"action": "approve_plan"}},
-            {"label": "Back to modes", "selection": {"action": "show_modes"}},
-        ],
-    }
+    payload = cards.finding_detail(finding, state["frames"][result.mode])
     await send_card(ctx, sender, state, finding.title, "detail", payload)
 
 
 def fee_label() -> str:
-    return f"${stripe_pay.FEE_USD} by card (Stripe test mode)"
+    return f"${stripe_pay.FEE_USD}"
 
 
 async def request_fee(ctx: Context, sender: str, state: dict):
@@ -397,12 +415,13 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         "status": "requested",
         "reference": reference,
         "stripe_sessions": [checkout["embedded_id"], checkout["hosted_id"]],
+        "checkout_url": checkout["hosted_url"],
     }
-    # Plain ASI:One chat may not render embedded Stripe checkout, so also offer the hosted page.
+    # Plain ASI:One chat may not render embedded Stripe checkout, so the card's Pay button opens the hosted page.
     await send_card(ctx, sender, state,
-                    f"To pay ${stripe_pay.FEE_USD}, [open the secure Stripe checkout]({checkout['hosted_url']}) "
-                    "(test mode: card 4242 4242 4242 4242, any future date, any CVC), then tap **I've paid**.",
-                    "review", cards.payment_check(fee_label()))
+                    f"Here's your secure checkout for the ${stripe_pay.FEE_USD} service fee: "
+                    f"[pay with Stripe]({checkout['hosted_url']}). Then tap I've paid.",
+                    "custom", cards.payment_card(fee_label(), checkout["hosted_url"]))
 
 
 async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
@@ -430,9 +449,8 @@ async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
 
 async def after_payment(ctx: Context, sender: str, state: dict, session_id: str):
     state["payment"] = {**state.get("payment", {}), "status": "paid", "session": session_id}
-    await send(ctx, sender, text_message(
-        f"Payment received: ${stripe_pay.FEE_USD} by card (Stripe test mode). "
-        "Next I'll find products that fit and prepare checkout links."))
+    await send_card(ctx, sender, state, f"Payment received: ${stripe_pay.FEE_USD}. Thank you!", "custom",
+                    cards.receipt_card(f"${stripe_pay.FEE_USD}", session_id[-12:]))
 
 
 async def check_payment(ctx: Context, sender: str, state: dict):
@@ -449,7 +467,7 @@ async def check_payment(ctx: Context, sender: str, state: dict):
             await after_payment(ctx, sender, state, session_id)
             return
     await send_card(ctx, sender, state, "I don't see the payment yet. Finish the Stripe checkout, then tap I've paid again.",
-                    "review", cards.payment_check(fee_label()))
+                    "custom", cards.payment_card(fee_label(), payment.get("checkout_url", "https://checkout.stripe.com")))
 
 
 @payments.on_message(CommitPayment)
