@@ -202,3 +202,17 @@ def test_the_bed_never_blocks_its_own_path_and_whole_inches_decide_seat_height()
     assert not [x for x in f if x.title.lower().startswith("bed") and "blocks" in x.title]
     assert not [x for x in f if "Low toilet seat" in x.title]
     assert "night path" not in summary
+
+
+def test_a_brand_alone_is_not_a_product_to_price():
+    from agents.specialists.claim.logic import analyze as claim
+    s = demo_space()
+    living = next(r.id for r in s.rooms if "living" in r.id)
+    space = with_objects([obj(1, "washer", "front-load washer", living, model_guess="Whirlpool"),
+                          obj(2, "dryer", "electric dryer", living, model_guess="Whirlpool"),
+                          obj(3, "tv", "wall TV", living, model_guess="Samsung QN55 TV")])
+    _, f, _ = claim(space, Profile(mode="claim"))
+    queries = {x.title: x.product_query.query for x in f}
+    assert queries["front-load washer"] == "Whirlpool front-load washer replacement price"
+    assert queries["electric dryer"] == "Whirlpool electric dryer replacement price"
+    assert queries["wall TV"] == "Samsung QN55 TV replacement price"

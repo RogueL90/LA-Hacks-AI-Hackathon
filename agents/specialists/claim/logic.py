@@ -24,7 +24,11 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
         if o.type in NOT_CONTENTS:
             continue
         brand = o.attributes.get("brand_guess") or ""
-        guess = o.attributes.get("model_guess") or (f"{brand} {o.label}".strip() if brand.lower() not in o.label.lower() else o.label)
+        model = o.attributes.get("model_guess") or ""
+        label_words = {w for w in o.label.lower().replace("-", " ").split() if len(w) >= 2}
+        if model and not label_words & set(model.lower().replace("-", " ").split()):
+            model = f"{model} {o.label}"  # "Whirlpool" alone prices the washer and the dryer the same
+        guess = model or (f"{brand} {o.label}".strip() if brand.lower() not in o.label.lower() else o.label)
         if o.type == "tv" and not o.attributes.get("model_guess"):
             # "wall mounted TV" finds TV mounts; price the set itself by its measured size (16:9 width -> diagonal).
             guess = f"{brand} {round(o.size[0] * M_TO_IN / 0.87)} inch TV".strip()

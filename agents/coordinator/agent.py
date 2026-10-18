@@ -279,10 +279,12 @@ async def route(ctx: Context, sender: str, state: dict, files: list[dict], selec
         await show_modes(ctx, sender, state, "What would you like to do next?")
 
 
-async def send_card(ctx: Context, to: str, state: dict, narration: str, kind: str, payload: dict):
-    """Send an Interactive Card and remember it, so prose replies can be matched to it."""
+async def send_card(ctx: Context, to: str, state: dict, narration: str, kind: str, payload: dict,
+                    terminal: bool = False):
+    """Send an Interactive Card and remember it, so prose replies can be matched to it.
+    terminal: the card has nothing to tap (a cart waiting for payment), so ASI:One doesn't wait on it."""
     state["last_card"] = {"kind": kind, "payload": payload}
-    await send(ctx, to, card_message(narration, kind, payload))
+    await send(ctx, to, card_message(narration, kind, payload, terminal=terminal))
 
 
 @chat.on_message(ChatAcknowledgement)
@@ -755,8 +757,10 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         + "\n".join(f"- {_short(q.title)}: ${q.price_usd:,.2f}"
                     + (f" × {int((q.specs or {}).get('quantity', 1))}" if int((q.specs or {}).get('quantity', 1) or 1) > 1 else "")
                     + f" at {q.merchant}" for q in cart.items[:10]) + "\n\n"
-        f"**[Pay the ${fee} service fee with Stripe]({checkout['hosted_url']})** to get the store links, then tap I've paid.",
-        "custom", cards.cart_card(cart, budget, f"${fee}", checkout["hosted_url"], notes))
+        f"**[Pay the ${fee} service fee with Stripe]({checkout['hosted_url']})** (or use ASI:One's Pay button). "
+        "I'll post your store links here as soon as the payment goes through.",
+        "custom", cards.cart_card(cart, budget, f"${fee}", checkout["hosted_url"], notes), terminal=True)
+    watch_payment(ctx, sender, reference)
     ctx.logger.info(f"job={reference} fee requested: Stripe {t_stripe:.1f} s, replies {time.monotonic() - t0 - t_stripe:.1f} s")
 
 
@@ -800,6 +804,38 @@ async def _verify(ctx: Context, state: dict, session_id: str) -> bool:
     except Exception:
         ctx.logger.exception(f"Stripe lookup failed for {session_id}")
         return False
+
+
+PAYMENT_POLL_FAST_S, PAYMENT_POLL_SLOW_S = 5, 20   # every 5 s for 5 minutes, then every 20 s
+PAYMENT_WATCH_FAST_S, PAYMENT_WATCH_S = 300, 1800
+
+
+def watch_payment(ctx: Context, sender: str, reference: str):
+    """No "I've paid" button: after the cart goes out, check Stripe in the background and post the
+    receipt as soon as the checkout is paid. ASI:One's own payment window reports through
+    CommitPayment; whichever comes first sends the receipt, the other is a no-op."""
+
+    async def run():
+        started = time.monotonic()
+        while time.monotonic() - started < PAYMENT_WATCH_S:
+            await asyncio.sleep(PAYMENT_POLL_FAST_S if time.monotonic() - started < PAYMENT_WATCH_FAST_S
+                                else PAYMENT_POLL_SLOW_S)
+            state = load(ctx, sender)
+            payment = state.get("payment") or {}
+            if payment.get("reference") != reference or payment.get("status") not in ("requested", "rejected"):
+                return  # paid through another path, or a new plan replaced this one
+            try:
+                session_id = await find_paid_session(ctx, state)
+            except Exception:
+                ctx.logger.exception("payment watch failed; trying again")
+                continue
+            if session_id:
+                ctx.logger.info(f"PAYMENT seen by the watcher: {session_id}")
+                await after_payment(ctx, sender, state, session_id)
+                save(ctx, sender, state)
+                return
+
+    asyncio.get_running_loop().create_task(run())
 
 
 async def find_paid_session(ctx: Context, state: dict) -> str | None:
@@ -851,8 +887,9 @@ async def check_payment(ctx: Context, sender: str, state: dict):
         await after_payment(ctx, sender, state, session_id)
         return
     url = payment.get("checkout_url", "https://checkout.stripe.com")
-    await send_card(ctx, sender, state, f"I don't see the payment yet. **[Finish the Stripe checkout]({url})**, then tap I've paid again.",
-                    "custom", cards.payment_card(fee_label(state), url))
+    await send_card(ctx, sender, state, f"I don't see the payment yet. **[Finish the Stripe checkout]({url})**: "
+                    "I'll post your store links here as soon as it goes through.",
+                    "custom", cards.payment_card(fee_label(state), url), terminal=True)
 
 
 CLAIM_INLINE_WAIT_S = 30  # wait this long for the prices, then file and answer; else post the package later

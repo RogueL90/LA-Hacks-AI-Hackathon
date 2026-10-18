@@ -339,10 +339,9 @@ def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_u
             {"type": "divider"},
             {"type": "text", "value": f"Pay the {fee_label} service fee to get the store link for every item. "
                                       "You buy on each store's site: this is a handoff, not an order."},
-            {"type": "text", "value": "Pay with the secure Stripe link in the message above (test mode · card "
-                                      "4242 4242 4242 4242 · any future date · any CVC), then tap I've paid.",
-             "style": "muted"},
-            {"type": "button", "label": "I've paid", "primary": True, "action": {"selection": {"action": "check_payment"}}},
+            {"type": "text", "value": "Pay with the secure Stripe link in the message above or ASI:One's Pay button "
+                                      "(test mode · card 4242 4242 4242 4242 · any future date · any CVC). Your store "
+                                      "links appear here as soon as Stripe confirms the payment.", "style": "muted"},
         ],
     }}
 
@@ -359,8 +358,8 @@ def payment_card(fee_label: str, checkout_url: str) -> dict:
                 {"type": "badge", "label": "Test mode", "variant": "info"},
             ]},
             {"type": "text", "value": "Pay with the Stripe link in the message above (test card 4242 4242 4242 4242 · "
-                                      "any future date · any CVC), then tap I've paid.", "style": "muted"},
-            {"type": "button", "label": "I've paid", "primary": True, "action": {"selection": {"action": "check_payment"}}},
+                                      "any future date · any CVC). Your store links appear here as soon as Stripe "
+                                      "confirms the payment.", "style": "muted"},
         ],
     }}
 

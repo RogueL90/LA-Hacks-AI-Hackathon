@@ -7,6 +7,11 @@ HEAD_HEIGHT = (0.4, 0.9)    # corners in this band hit a toddler's head when the
 TIP_OVER_MIN_HEIGHT = 0.75  # furniture this tall can fall on a child if it isn't anchored
 
 
+def _a(number: int) -> str:
+    """ "an 18-month-old", "an 8-month-old", "a 14-month-old"."""
+    return "an" if str(number).startswith("8") or number in (11, 18) else "a"
+
+
 def _count(items: list, noun: str) -> str:
     return f"{len(items)} {noun}{'s' if len(items) > 1 else ''}"
 
@@ -139,8 +144,8 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
         summary = (f"Your {months}-month-old isn't moving yet: these {n} matter once crawling starts "
                    "(around 6 to 10 months), so there's time to fix them in order.")
     elif months is not None and months < 12:
-        summary = f"Found {n} within a crawler's reach for a {months}-month-old."
+        summary = f"Found {n} within a crawler's reach for {_a(months)} {months}-month-old."
     else:
-        age = f" for a {months}-month-old" if months else ""
+        age = f" for {_a(months)} {months}-month-old" if months else ""
         summary = f"Found {n} within a toddler's reach{age}."
     return summary, findings, overlays

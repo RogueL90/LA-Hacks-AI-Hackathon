@@ -136,10 +136,10 @@ def cart():
     return CartResult(job_id="j", ok=True, items=[q], subtotal_usd=48, within_budget=True, service_fee_usd="1.00")
 
 
-def test_cart_card_shows_prices_and_one_action_but_not_store_links_before_paying():
+def test_cart_card_shows_prices_without_buttons_or_store_links_before_paying():
     card = json.dumps(ensure_ascii=False, obj=cards.cart_card(cart(), 300, "$1.00", "https://checkout.stripe.com/c/pay/cs_test_1"))
     assert "Your cart · 1 product" in card and "$24.00 × 2" in card and "Within your $300.00 budget" in card
-    assert "https://store/grab" not in card and "redirect" not in card and "I've paid" in card
+    assert "https://store/grab" not in card and "redirect" not in card and '"type": "button"' not in card
 
 
 def test_receipt_card_lists_the_products_without_link_buttons():

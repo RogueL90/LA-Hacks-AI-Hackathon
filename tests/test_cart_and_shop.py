@@ -197,3 +197,32 @@ def test_price_cap_never_hides_a_real_product():
 def test_cart_keeps_the_most_important_item_even_over_budget():
     cart = build_cart(CartRequest(job_id="j", budget_usd=50, quotes=[quote("a", "https://s/1", 90), quote("b", "https://s/2", 20)]))
     assert [i.finding_id for i in cart.items] == ["a"] and not cart.within_budget
+
+
+def test_paying_without_tapping_anything_posts_the_receipt(fake_stripe, monkeypatch):
+    """No "I've paid" button: the agent watches Stripe after the cart goes out."""
+    monkeypatch.setattr(coord, "PAYMENT_POLL_FAST_S", 0.01)
+    searches = []
+
+    async def verifier(req):
+        from agents.actions.payment_verifier.verify import VerifyPaymentResult
+        return VerifyPaymentResult(job_id=req.job_id, ok=True, verified=req.transaction_id in fake_stripe["paid"],
+                                   detail="test")
+
+    agents = {**shop_agents(searches), "payment_verifier": verifier}
+    ctx = FakeCtx(agents=agents)
+    state = plan_state()
+
+    async def flow():
+        await coord.shop(ctx, USER, state)
+        coord.save(ctx, USER, state)           # what on_chat does after each message
+        assert ctx.last_card_title().startswith("Your cart")
+        fake_stripe["paid"].add("cs_test_hosted_1")  # the user pays with the link; taps nothing
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if ctx.last_card_title() == "Payment received":
+                break
+
+    run(flow())
+    assert ctx.last_card_title() == "Payment received"
+    assert coord.load(ctx, USER)["payment"]["status"] == "paid"
