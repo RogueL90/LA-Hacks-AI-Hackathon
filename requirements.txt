@@ -5,3 +5,7 @@ anthropic==1.15.0
 httpx==0.28.1
 python-dotenv==1.2.4
 certifi==2026.7.22
+stripe==16.0.0
+openpyxl==3.1.5
+reportlab==5.0.1
+sentry-sdk==2.72.0

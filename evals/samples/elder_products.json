@@ -1,0 +1,21 @@
+{
+  "job_id": "job_elder_products",
+  "queries": [
+    {
+      "query": "adhesive non-slip rug gripper 5x7",
+      "quantity": 1,
+      "constraints": {"length_in": 84, "width_in": 60, "finding_id": "rug_gripper"}
+    },
+    {
+      "query": "plug-in night light",
+      "quantity": 4,
+      "max_price_usd": 40,
+      "constraints": {"finding_id": "night_lights"}
+    },
+    {
+      "query": "18 in bathroom grab bar",
+      "quantity": 1,
+      "constraints": {"length_in": 18, "finding_id": "grab_bar"}
+    }
+  ]
+}

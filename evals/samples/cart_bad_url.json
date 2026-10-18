@@ -1,0 +1,23 @@
+{
+  "job_id": "job_cart_bad_url",
+  "budget_usd": 100,
+  "quotes": [
+    {
+      "title": "Blocked merchant page",
+      "url": "https://example.invalid/blocked-product",
+      "merchant": "unknown",
+      "price_usd": 5,
+      "url_verified": false,
+      "finding_id": "blocked"
+    },
+    {
+      "title": "Verified night light",
+      "url": "https://example.com/night-light",
+      "merchant": "example",
+      "price_usd": 12,
+      "url_verified": true,
+      "finding_id": "night_light",
+      "specs": {"quantity": 1, "role": "primary", "query": "plug-in night light"}
+    }
+  ]
+}

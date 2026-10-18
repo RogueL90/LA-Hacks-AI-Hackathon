@@ -1,0 +1,16 @@
+{
+  "job_id": "job_interior_products",
+  "queries": [
+    {
+      "query": "japandi sofa",
+      "max_price_usd": 1500,
+      "quantity": 1,
+      "constraints": {"width_m": 2.1, "style": "japandi", "finding_id": "sofa"}
+    },
+    {
+      "query": "japandi floor lamp",
+      "quantity": 1,
+      "constraints": {"style": "japandi", "finding_id": "floor_lamp"}
+    }
+  ]
+}
