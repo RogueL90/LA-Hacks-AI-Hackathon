@@ -28,6 +28,7 @@ from uagents_core.contrib.protocols.payment import (
 )
 
 from agents.coordinator import cards
+from agents.coordinator.understand import understand
 from agents.specialists.baby.logic import analyze as baby_analyze
 from agents.specialists.claim.logic import analyze as claim_analyze
 from agents.specialists.elder.logic import analyze as elder_analyze
@@ -73,12 +74,18 @@ chat = Protocol(spec=chat_protocol_spec)
 payments = Protocol(spec=payment_protocol_spec, role="seller")
 
 
+def _key(ctx: Context, sender: str) -> str:
+    # One ASI:One conversation = one session id, the same one ASI:One reports as agent_session_id.
+    # The planner relays many users from a single sender address, so the sender alone isn't enough.
+    return f"session:{ctx.session}" if ctx.session else f"sender:{sender}"
+
+
 def load(ctx: Context, sender: str) -> dict:
-    return ctx.storage.get(sender) or {}
+    return ctx.storage.get(_key(ctx, sender)) or {}
 
 
 def save(ctx: Context, sender: str, state: dict):
-    ctx.storage.set(sender, state)
+    ctx.storage.set(_key(ctx, sender), state)
 
 
 async def send(ctx: Context, to: str, msg: ChatMessage):
@@ -90,30 +97,35 @@ async def send(ctx: Context, to: str, msg: ChatMessage):
 @chat.on_message(ChatMessage)
 async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     await ctx.send(sender, ChatAcknowledgement(timestamp=msg.timestamp, acknowledged_msg_id=msg.msg_id))
-    files = attachments(msg)
-    text = clean_text(msg)
-    selection = parse_selection(text)
-    action = selection.get("action")
+    # The planner marks every relayed message as a session start, so state is never wiped here;
+    # a new conversation gets a new session id and therefore fresh state.
     starting = any(isinstance(c, StartSessionContent) for c in msg.content)
-    ctx.logger.info(f"from={sender[:16]}… text={text[:200]!r} files={len(files)} action={action}")
+    state = load(ctx, sender)
+    text = clean_text(msg)
+    # The ASI:One planner repeats the video link in every relayed message, so only new uploads count.
+    files = [f for f in attachments(msg) if f["url"] not in state.get("media", [])]
+    selection = parse_selection(text)
+    if not selection and text:
+        selection = await understand(text, state.get("last_card"))
+    action = selection.get("action")
+    ctx.logger.info(f"from={sender[:16]}… session={ctx.session} text={text[:200]!r} files={len(files)} selection={selection}")
 
-    state = {} if starting else load(ctx, sender)
-    if starting:
+    if starting and not state:
         # Tells ASI:One this agent accepts uploads, so the user can attach a video or photos.
         await ctx.send(sender, ChatMessage(
             timestamp=msg.timestamp, msg_id=uuid4(),
             content=[MetadataContent(type="metadata", metadata={"attachments": "true"})]))
     if files:
-        await on_media(ctx, sender, state, files)
+        await on_media(ctx, sender, state, files, selection.get("mode"))
     elif action == "choose_mode":
         await on_choose_mode(ctx, sender, state, selection.get("mode", ""))
     elif action == "submit_intake":
         await on_intake(ctx, sender, state, selection)
     elif action == "finding_detail":
         await on_finding_detail(ctx, sender, state, selection.get("finding_id", ""))
-    elif action == "approve_plan" or text.lower() in {"pay", "approve"}:
+    elif action == "approve_plan":
         await request_fee(ctx, sender, state)
-    elif action == "check_payment" or text.lower() in {"paid", "i've paid", "i paid", "done"}:
+    elif action == "check_payment":
         await check_payment(ctx, sender, state)
     elif action == "decline_plan":
         await send(ctx, sender, text_message("No problem. Your results are saved; say \"approve\" whenever you're ready."))
@@ -124,15 +136,20 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     save(ctx, sender, state)
 
 
+async def send_card(ctx: Context, to: str, state: dict, narration: str, kind: str, payload: dict):
+    """Send an Interactive Card and remember it, so prose replies can be matched to it."""
+    state["last_card"] = {"kind": kind, "payload": payload}
+    await send(ctx, to, card_message(narration, kind, payload))
+
+
 @chat.on_message(ChatAcknowledgement)
 async def on_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
     pass
 
 
-async def on_media(ctx: Context, sender: str, state: dict, files: list[dict]):
+async def on_media(ctx: Context, sender: str, state: dict, files: list[dict], mode: str | None = None):
     job_id = str(uuid4())
     urls = [f["url"] for f in files]
-    await send(ctx, sender, text_message("Got it. Mapping your home in 3D now; this takes about a minute."))
     reply, status = await ctx.send_and_receive(
         ADDRESSES["space_builder"], SpaceBuildRequest(job_id=job_id, media_urls=urls),
         response_type=SpaceBuildResult, timeout=180,
@@ -156,23 +173,28 @@ async def on_media(ctx: Context, sender: str, state: dict, files: list[dict]):
     intro = f"Your home is mapped: {len(space.rooms)} rooms and {len(space.objects)} objects."
     if state["prebuilt"]:
         intro += " (Live 3D building is still in progress, so this run uses our demo apartment's measurements.)"
-    await show_modes(ctx, sender, state, intro)
+    if mode in cards.MODES:
+        # The request already says what they want, so skip the menu and ask that mode's questions.
+        await on_choose_mode(ctx, sender, state, mode, intro)
+    else:
+        await show_modes(ctx, sender, state, intro)
 
 
 async def show_modes(ctx: Context, sender: str, state: dict, narration: str):
     if not state.get("frames"):
         await send(ctx, sender, text_message(GREETING))
         return
-    await send(ctx, sender, card_message(narration, "carousel", cards.space_ready(state["frames"], state.get("viewer_url"))))
+    await send_card(ctx, sender, state, narration, "carousel", cards.space_ready(state["frames"], state.get("viewer_url")))
 
 
-async def on_choose_mode(ctx: Context, sender: str, state: dict, mode: str):
+async def on_choose_mode(ctx: Context, sender: str, state: dict, mode: str, intro: str = ""):
     if mode not in cards.MODES or not state.get("space_id"):
         await show_modes(ctx, sender, state, "Pick one of these to start.")
         return
     state["mode"] = mode
-    await send(ctx, sender, card_message(
-        f"{cards.MODES[mode]['title']}: a few quick questions first.", "form", cards.intake_form(mode, state["rooms"])))
+    narration = f"{intro} " if intro else ""
+    narration += f"{cards.MODES[mode]['title']}: a few quick questions first."
+    await send_card(ctx, sender, state, narration, "form", cards.intake_form(mode, state["rooms"]))
 
 
 def _number(value, cast):
@@ -221,21 +243,16 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict):
     profile = profile_from(selection)
     state["mode"] = mode
     state["profile"] = profile.model_dump()
-    await send(ctx, sender, text_message(f"Running the {cards.MODES[mode]['title'].lower()} check..."))
+    # One reply per message: ASI:One's planner treats the first text reply as the agent's whole answer.
     result = await run_mode(ctx, state, mode, profile)
     state["result"] = result.model_dump()
-    fallback_image = state["frames"][mode]
     if not result.findings:
         await send(ctx, sender, text_message(result.summary))
         return
-    await send(ctx, sender, card_message(result.summary, "carousel", cards.findings_carousel(result, fallback_image)))
-    if mode == "claim":
-        await send(ctx, sender, text_message(
-            "Next I'll price each item at today's replacement cost and build your claim package."))
-    else:
-        await send(ctx, sender, card_message(
-            "Here's the fix plan. Approve it and I'll find products that fit and prepare checkout links.",
-            "review", cards.fix_plan_review(result, fee_label())))
+    next_step = ("Next I'll price each item at today's replacement cost and build your claim package."
+                 if mode == "claim" else "Approve the plan and I'll find products that fit and prepare checkout links.")
+    await send_card(ctx, sender, state, f"{result.summary} {next_step}", "custom",
+                    cards.results_card(result, state["frames"][mode], None if mode == "claim" else fee_label()))
 
 
 async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: str):
@@ -260,7 +277,7 @@ async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: 
             {"label": "Back to modes", "selection": {"action": "show_modes"}},
         ],
     }
-    await send(ctx, sender, card_message(finding.title, "detail", payload))
+    await send_card(ctx, sender, state, finding.title, "detail", payload)
 
 
 def fee_label() -> str:
@@ -299,10 +316,10 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         "stripe_sessions": [checkout["embedded_id"], checkout["hosted_id"]],
     }
     # Plain ASI:One chat may not render embedded Stripe checkout, so also offer the hosted page.
-    await send(ctx, sender, card_message(
-        f"To pay ${stripe_pay.FEE_USD}, [open the secure Stripe checkout]({checkout['hosted_url']}) "
-        "(test mode: card 4242 4242 4242 4242, any future date, any CVC), then tap **I've paid**.",
-        "review", cards.payment_check(fee_label())))
+    await send_card(ctx, sender, state,
+                    f"To pay ${stripe_pay.FEE_USD}, [open the secure Stripe checkout]({checkout['hosted_url']}) "
+                    "(test mode: card 4242 4242 4242 4242, any future date, any CVC), then tap **I've paid**.",
+                    "review", cards.payment_check(fee_label()))
 
 
 async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
@@ -338,9 +355,8 @@ async def check_payment(ctx: Context, sender: str, state: dict):
         if await verify_paid(ctx, state, session_id):
             await after_payment(ctx, sender, state, session_id)
             return
-    await send(ctx, sender, card_message(
-        "I don't see the payment yet. Finish the Stripe checkout, then tap I've paid again.",
-        "review", cards.payment_check(fee_label())))
+    await send_card(ctx, sender, state, "I don't see the payment yet. Finish the Stripe checkout, then tap I've paid again.",
+                    "review", cards.payment_check(fee_label()))
 
 
 @payments.on_message(CommitPayment)

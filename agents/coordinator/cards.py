@@ -154,3 +154,37 @@ def payment_check(fee_label: str) -> dict:
         "approve_cta": {"label": "I've paid", "selection": {"action": "check_payment"}, "primary": True},
         "reject_cta": {"label": "Cancel", "selection": {"action": "decline_plan"}},
     }
+
+
+def results_card(result: ModeResult, image: str, fee_label: str | None) -> dict:
+    """Custom card: findings list (tap for details) plus Approve and Other modes buttons."""
+    rows = []
+    for f in result.findings[:10]:
+        children = [{"type": "heading", "value": f.title, "level": 3}]
+        detail = _finding_subtitle(f)
+        if detail:
+            children.append({"type": "text", "value": detail})
+        if f.fix_summary and f.fix_summary != detail:
+            children.append({"type": "text", "value": f"Fix: {f.fix_summary}", "style": "muted"})
+        if f.kind == "hazard":
+            children.append({"type": "badge", "label": f"Severity {f.severity}/5",
+                             "variant": "warning" if f.severity >= 3 else "info"})
+        rows.append({"children": children, "action": {"selection": {"action": "finding_detail", "finding_id": f.id}}})
+    buttons = []
+    if fee_label:
+        buttons.append({"type": "button", "label": "Approve plan", "primary": True,
+                        "action": {"selection": {"action": "approve_plan"}}})
+    buttons.append({"type": "button", "label": "Other modes", "action": {"selection": {"action": "show_modes"}}})
+    footer = [{"type": "text", "value": f"Service fee if you approve: {fee_label}", "style": "muted"}] if fee_label else []
+    return {"root": {
+        "type": "section",
+        "title": MODES[result.mode]["title"],
+        "subtitle": result.summary,
+        "children": [
+            {"type": "image", "src": image, "alt": "Frame from your video", "aspect_ratio": "16:9"},
+            {"type": "list", "items": rows},
+            {"type": "divider"},
+            *footer,
+            {"type": "group", "direction": "row", "gap": 8, "children": buttons},
+        ],
+    }}

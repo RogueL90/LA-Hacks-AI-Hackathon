@@ -16,7 +16,6 @@ def _evidence(note: str) -> list[Evidence]:
 def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Overlay]]:
     aid = (profile.mobility_aid or "none").lower()
     need = CLEAR_WIDTH.get(aid, DEFAULT_CLEAR)
-    who = profile.person or "they"
     findings: list[Finding] = []
     overlays: list[Overlay] = []
     objs = {o.id: o for o in space.objects}
@@ -139,6 +138,6 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
 
     findings.sort(key=lambda f: -f.severity)
     worst = sum(1 for f in findings if f.severity >= 4)
-    summary = (f"Found {len(findings)} fall hazards, {worst} of them serious, on the path {who} takes at night."
+    summary = (f"Found {len(findings)} fall hazards, {worst} of them serious, on the night path from bed to bathroom."
                if findings else "No fall hazards found on the night path.")
     return summary, findings, overlays

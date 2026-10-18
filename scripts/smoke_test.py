@@ -86,6 +86,17 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
                 await ctx.send(COORD, say(json.dumps({**INTAKE[MODE], "action": "submit_intake", "mode": MODE})))
             elif kind == "review":
                 await ctx.send(COORD, say(json.dumps(payload["approve_cta"]["selection"])))
+            elif kind == "custom":
+                root = payload["root"]
+                items = next((c["items"] for c in root["children"] if c["type"] == "list"), [])
+                for item in items:
+                    print("     - " + " | ".join(c.get("value", c.get("label", "")) for c in item["children"]))
+                buttons = [b for c in root["children"] if c["type"] == "group" for b in c["children"]]
+                approve = next((b for b in buttons if b["action"]["selection"].get("action") == "approve_plan"), None)
+                if approve:
+                    await ctx.send(COORD, say(json.dumps(approve["action"]["selection"])))
+                else:
+                    print(f"SMOKE TEST PASSED ({MODE}): cards seen {seen}; no payment step for this mode")
         elif isinstance(c, MetadataContent):
             print(f"  META {c.metadata}")
 
