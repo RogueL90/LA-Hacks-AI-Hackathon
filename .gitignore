@@ -5,3 +5,4 @@
 __pycache__/
 *.log
 *_data.json
+logs/
