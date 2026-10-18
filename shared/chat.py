@@ -45,7 +45,8 @@ MEDIA_TYPES = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".heic": "image/heic",
 }
 _MD_LINK = re.compile(r"!?\[([^\]]*)\]\((https?://[^\s)]+)\)")
-_BARE_URL = re.compile(r"https?://[^\s)\]]+")
+_BARE_URL = re.compile(r"https?://[^\s)\]<>\"']+")
+_TRAILING = ".,;:!?"  # sentence punctuation right after a link isn't part of it
 
 
 def _media_type(url: str) -> str:
@@ -75,7 +76,7 @@ def attachments(msg: ChatMessage) -> list[dict]:
     text = msg.text()
     links = [(name, url) for name, url in _MD_LINK.findall(text)]
     linked = {url for _, url in links}
-    links += [("", url) for url in _BARE_URL.findall(text) if url not in linked]
+    links += [("", url.rstrip(_TRAILING)) for url in _BARE_URL.findall(text) if url.rstrip(_TRAILING) not in linked]
     seen = {f["url"] for f in found}
     for name, url in links:
         mime = _media_type(url)

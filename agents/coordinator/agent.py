@@ -425,7 +425,8 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict, int
         return
     next_step = ("Next I'll price each item at today's replacement cost and build your claim package."
                  if mode == "claim" else "Pick the fixes you want and approve; I'll find products that fit.")
-    await show_results(ctx, sender, state, f"{intro} {result.summary} {next_step}".strip())
+    view = f" [Open the 3D view]({result.viewer_url}) to see every finding pinned on your home." if result.viewer_url else ""
+    await show_results(ctx, sender, state, f"{intro} {result.summary} {next_step}{view}".strip())
 
 
 def evidence_image(state: dict, finding) -> str | None:
