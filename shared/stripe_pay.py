@@ -41,10 +41,9 @@ def _create(reference: str, description: str) -> dict:
     expires_at = int(time.time()) + 1800  # Stripe's minimum is 30 minutes
     metadata = {"reference": reference, "service": "last_mile_home"}
     embedded = client.v1.checkout.sessions.create(params={
-        "ui_mode": "embedded",
+        "ui_mode": "embedded_page",  # Stripe renamed "embedded"; ASI:One metadata below keeps "embedded"
         "redirect_on_completion": "if_required",
         "mode": "payment",
-        "payment_method_types": ["card"],
         "return_url": f"{RETURN_URL}?session_id={{CHECKOUT_SESSION_ID}}",
         "expires_at": expires_at,
         "line_items": _line_items(description),
@@ -52,7 +51,6 @@ def _create(reference: str, description: str) -> dict:
     })
     hosted = client.v1.checkout.sessions.create(params={
         "mode": "payment",
-        "payment_method_types": ["card"],
         "success_url": f"{RETURN_URL}?session_id={{CHECKOUT_SESSION_ID}}",
         "expires_at": expires_at,
         "line_items": _line_items(description),
@@ -74,13 +72,17 @@ def _create(reference: str, description: str) -> dict:
     }
 
 
-def _paid(session_id: str) -> bool:
-    return _client().v1.checkout.sessions.retrieve(session_id).payment_status == "paid"
+def _paid(session_id: str, expected_usd: float | None) -> bool:
+    session = _client().v1.checkout.sessions.retrieve(session_id)
+    if session.payment_status != "paid":
+        return False
+    return expected_usd is None or session.amount_total == round(expected_usd * 100)
 
 
 async def create_checkout(reference: str, description: str) -> dict:
     return await asyncio.to_thread(_create, reference, description)
 
 
-async def is_paid(session_id: str) -> bool:
-    return await asyncio.to_thread(_paid, session_id)
+async def is_paid(session_id: str, expected_usd: float | None = None) -> bool:
+    """True only if Stripe says the session is paid (and, if given, for the expected amount)."""
+    return await asyncio.to_thread(_paid, session_id, expected_usd)

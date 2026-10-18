@@ -23,6 +23,12 @@ transform = repurpose a room such as a home office, claim = insurance claim inve
 sees findings and a fix plan -> approves it -> pays a service fee -> confirms payment.
 Messages may come from the user directly or from the ASI:One planner describing what the user clicked or typed.
 Use the last card shown to the user to resolve what a click or answer refers to.
+Messages can be in any language; answer with the same actions and English field values.
+The user can switch modes at any time: if they ask for a different mode than the last card's, that is choose_mode with
+the new mode (e.g. "actually, turn the bedroom into an office" -> choose_mode, mode=transform, goal="home office",
+room_id="bedroom"). Copy any answers the message contains into fields even for choose_mode.
+Field formats: mobility_aid is one of none/cane/walker/wheelchair; night_trips is "true" or "false"; policy_type is
+replacement_cost/actual_cash_value/unknown; numbers as plain digits ("$1,200" -> "1200"); room_id is the room name.
 Actions:
 - choose_mode: user picks a mode, or asks for a mode's check/report/assessment without giving the form answers (set mode)
 - submit_intake: user answers the form questions (set mode and copy every answer into fields, as plain strings)
@@ -52,10 +58,13 @@ def _card_summary(card: dict | None) -> str:
     return json.dumps({"kind": kind, "title": p.get("title"), "content": body})[:3000]
 
 
+ALL_FIELDS = ["person", "age", "mobility_aid", "night_trips", "child_age_months", "goal", "room_id",
+              "requirements", "style", "budget_usd", "policy_type", "zip_code"]
+
+
 def _schema(card: dict | None) -> dict:
-    field_names = []
-    if card and card.get("kind") == "form":
-        field_names = [f["name"] for f in card["payload"].get("fields", [])]
+    # Always allow every answer field: users volunteer answers for other modes too (mode switches).
+    field_names = list(ALL_FIELDS)
     return {
         "type": "object",
         "additionalProperties": False,

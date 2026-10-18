@@ -5,6 +5,7 @@ findings + fix plan -> service fee via the Payment Protocol (Stripe, test mode).
 Session state lives in ctx.storage, keyed by the ASI:One sender.
 """
 import json
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -107,7 +108,6 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     selection = parse_selection(text)
     if not selection and text:
         selection = await understand(text, state.get("last_card"))
-    action = selection.get("action")
     ctx.logger.info(f"from={sender[:16]}… session={ctx.session} text={text[:200]!r} files={len(files)} selection={selection}")
 
     if starting and not state:
@@ -115,8 +115,50 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
         await ctx.send(sender, ChatMessage(
             timestamp=msg.timestamp, msg_id=uuid4(),
             content=[MetadataContent(type="metadata", metadata={"attachments": "true"})]))
+    try:
+        await route(ctx, sender, state, files, selection)
+    except Exception:
+        # Never leave the user without a reply: the planner would otherwise wait and give up.
+        ctx.logger.exception(f"session={ctx.session} handler failed")
+        await send(ctx, sender, text_message(
+            "Sorry, something went wrong on my side while handling that. I've logged it; please try again."))
+    save(ctx, sender, state)
+
+
+ANSWER_KEYS = ["person", "age", "mobility_aid", "night_trips", "child_age_months", "goal", "room_id",
+               "requirements", "style", "budget_usd", "policy_type", "zip_code"]
+REQUIRED = {"elder": ["mobility_aid"], "baby": ["child_age_months"],
+            "transform": ["goal", "room_id"], "claim": ["policy_type", "zip_code"]}
+
+
+def has_answers(state: dict, mode: str) -> bool:
+    answers = state.get("answers", {})
+    return mode in REQUIRED and all(answers.get(k) not in (None, "") for k in REQUIRED[mode])
+
+
+async def route(ctx: Context, sender: str, state: dict, files: list[dict], selection: dict):
+    action = selection.get("action")
+    answers = {k: v for k, v in selection.items() if k in ANSWER_KEYS}
+    if answers:
+        state.setdefault("answers", {}).update(answers)
+    if selection.get("mode") in cards.MODES and action in ("choose_mode", "submit_intake"):
+        state["wanted_mode"] = selection["mode"]
+
     if files:
-        await on_media(ctx, sender, state, files, selection.get("mode"))
+        await on_media(ctx, sender, state, files, state.get("wanted_mode"))
+    elif not state.get("space_id") and action != "check_payment":
+        # Nothing to work on yet: remember what they asked for and ask for the home.
+        wanted = cards.MODES.get(state.get("wanted_mode", ""), {}).get("title")
+        if wanted or action != "other":
+            lead = f"Happy to do the {wanted.lower()} check. " if wanted else ""
+            await send(ctx, sender, text_message(
+                f"{lead}Please attach a 30-second video or a few photos of the home "
+                "(as a file, not a YouTube or web link) and I'll map it in 3D."))
+        else:
+            await send(ctx, sender, text_message(GREETING))
+    elif action == "choose_mode" and has_answers(state, selection.get("mode", "")):
+        # e.g. "actually, turn the bedroom into an office": everything needed is already known.
+        await on_intake(ctx, sender, state, {"mode": selection["mode"]})
     elif action == "choose_mode":
         await on_choose_mode(ctx, sender, state, selection.get("mode", ""))
     elif action == "submit_intake":
@@ -129,11 +171,8 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
         await check_payment(ctx, sender, state)
     elif action == "decline_plan":
         await send(ctx, sender, text_message("No problem. Your results are saved; say \"approve\" whenever you're ready."))
-    elif action == "show_modes" or state.get("space_id"):
-        await show_modes(ctx, sender, state, "What would you like to do next?")
     else:
-        await send(ctx, sender, text_message(GREETING))
-    save(ctx, sender, state)
+        await show_modes(ctx, sender, state, "What would you like to do next?")
 
 
 async def send_card(ctx: Context, to: str, state: dict, narration: str, kind: str, payload: dict):
@@ -160,7 +199,10 @@ async def on_media(ctx: Context, sender: str, state: dict, files: list[dict], mo
     else:
         ctx.logger.warning(f"job={job_id} space build failed ({status.detail}); using the demo home")
         space = demo_space(snapshot_url=video_frame(urls[0]))
-    video = next((f["url"] for f in files if f["mime_type"].startswith("video")), urls[0])
+    video = next((f["url"] for f in files if f["mime_type"].startswith("video")), None)
+    photos = [f["url"] for f in files if not f["mime_type"].startswith("video")] or urls
+    frames = {m: video_frame(video, info["frame"]) if video else photos[i % len(photos)]
+              for i, (m, info) in enumerate(cards.MODES.items())}
     state.update({
         "job_id": job_id,
         "media": urls,
@@ -168,12 +210,17 @@ async def on_media(ctx: Context, sender: str, state: dict, files: list[dict], mo
         "viewer_url": space.viewer_url,
         "prebuilt": space.scale_method == "prebuilt",
         "rooms": [{"value": r.id, "label": r.name} for r in space.rooms],
-        "frames": {m: video_frame(video, info["frame"]) for m, info in cards.MODES.items()},
+        "frames": frames,
+        "result": None,
+        "payment": None,
     })
     intro = f"Your home is mapped: {len(space.rooms)} rooms and {len(space.objects)} objects."
     if state["prebuilt"]:
         intro += " (Live 3D building is still in progress, so this run uses our demo apartment's measurements.)"
-    if mode in cards.MODES:
+    if mode in cards.MODES and has_answers(state, mode):
+        # They already told us everything this mode needs, so run it straight away.
+        await on_intake(ctx, sender, state, {"mode": mode}, intro)
+    elif mode in cards.MODES:
         # The request already says what they want, so skip the menu and ask that mode's questions.
         await on_choose_mode(ctx, sender, state, mode, intro)
     else:
@@ -198,10 +245,27 @@ async def on_choose_mode(ctx: Context, sender: str, state: dict, mode: str, intr
 
 
 def _number(value, cast):
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return cast(value)
+    match = re.search(r"\d[\d,]*(?:\.\d+)?", str(value))
     try:
-        return cast(value) if value not in (None, "") else None
+        return cast(float(match.group(0).replace(",", ""))) if match else None
     except (TypeError, ValueError):
         return None
+
+
+def resolve_room(state: dict, room: str | None) -> str | None:
+    """Match "the bedroom", "Bedroom" or "bedroom" to a room id in this home."""
+    if not room:
+        return None
+    wanted = room.lower().replace("the ", "").strip()
+    for r in state.get("rooms", []):
+        label = r["label"].lower()
+        if wanted in (r["value"].lower(), label) or wanted in label or label in wanted:
+            return r["value"]
+    return None
 
 
 def profile_from(selection: dict) -> Profile:
@@ -235,11 +299,23 @@ async def run_mode(ctx: Context, state: dict, mode: str, profile: Profile) -> Mo
     return ModeResult(job_id=req.job_id, mode=mode, ok=True, summary=summary, findings=findings)
 
 
-async def on_intake(ctx: Context, sender: str, state: dict, selection: dict):
+async def on_intake(ctx: Context, sender: str, state: dict, selection: dict, intro: str = ""):
     mode = selection.get("mode") or state.get("mode")
     if mode not in cards.MODES or not state.get("space_id"):
         await show_modes(ctx, sender, state, "Pick what you'd like to do first.")
         return
+    selection = {**state.get("answers", {}), **selection}
+    if mode == "transform":
+        room_id = resolve_room(state, selection.get("room_id"))
+        if not room_id:
+            asked = selection.get("room_id")
+            names = ", ".join(r["label"] for r in state["rooms"])
+            lead = f"I don't see a {asked} in this home. " if asked else ""
+            state["mode"] = mode
+            await send_card(ctx, sender, state, f"{intro} {lead}Which room should I transform? This home has: {names}.".strip(),
+                            "form", cards.intake_form(mode, state["rooms"]))
+            return
+        selection["room_id"] = room_id
     profile = profile_from(selection)
     state["mode"] = mode
     state["profile"] = profile.model_dump()
@@ -251,7 +327,7 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict):
         return
     next_step = ("Next I'll price each item at today's replacement cost and build your claim package."
                  if mode == "claim" else "Approve the plan and I'll find products that fit and prepare checkout links.")
-    await send_card(ctx, sender, state, f"{result.summary} {next_step}", "custom",
+    await send_card(ctx, sender, state, f"{intro} {result.summary} {next_step}".strip(), "custom",
                     cards.results_card(result, state["frames"][mode], None if mode == "claim" else fee_label()))
 
 
@@ -285,6 +361,13 @@ def fee_label() -> str:
 
 
 async def request_fee(ctx: Context, sender: str, state: dict):
+    result = state.get("result")
+    if not result or result.get("mode") == "claim" or not result.get("findings"):
+        await show_modes(ctx, sender, state, "There's no fix plan to approve yet. Pick a check to run first.")
+        return
+    if (state.get("payment") or {}).get("status") == "paid":
+        await send(ctx, sender, text_message("You've already paid for this plan. Next I'll find products that fit."))
+        return
     if not stripe_pay.enabled():
         ctx.logger.error("Stripe test keys are missing; cannot request the service fee")
         await send(ctx, sender, text_message(
@@ -323,7 +406,13 @@ async def request_fee(ctx: Context, sender: str, state: dict):
 
 
 async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
-    """Ask Pranay's Payment Verifier; if it doesn't answer, check with Stripe directly."""
+    """Ask Pranay's Payment Verifier; if it doesn't answer, check with Stripe directly.
+
+    Only sessions this conversation created count, so a forged or reused id can't unlock anything.
+    """
+    if session_id not in (state.get("payment") or {}).get("stripe_sessions", []):
+        ctx.logger.warning(f"PAYMENT rejected: {session_id} is not one of this conversation's checkout sessions")
+        return False
     req = VerifyPaymentRequest(
         job_id=state.get("job_id") or "", transaction_id=session_id,
         expected_amount_usd=float(stripe_pay.FEE_USD))
@@ -333,7 +422,7 @@ async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
         return reply.verified
     ctx.logger.info(f"Payment Verifier unavailable ({status.detail}); checking Stripe directly")
     try:
-        return await stripe_pay.is_paid(session_id)
+        return await stripe_pay.is_paid(session_id, expected_usd=float(stripe_pay.FEE_USD))
     except Exception:
         ctx.logger.exception(f"Stripe lookup failed for {session_id}")
         return False
@@ -348,6 +437,10 @@ async def after_payment(ctx: Context, sender: str, state: dict, session_id: str)
 
 async def check_payment(ctx: Context, sender: str, state: dict):
     payment = state.get("payment") or {}
+    if not payment.get("stripe_sessions") and payment.get("status") != "paid":
+        await send(ctx, sender, text_message(
+            "There's nothing to pay yet. Once you approve a fix plan I'll send you a secure Stripe checkout."))
+        return
     if payment.get("status") == "paid":
         await send(ctx, sender, text_message("You're all paid. Next I'll find products that fit."))
         return
@@ -365,6 +458,15 @@ async def on_commit(ctx: Context, sender: str, msg: CommitPayment):
         f"PAYMENT commit from={sender[:16]}… tx={msg.transaction_id} funds={msg.funds.amount} {msg.funds.currency} "
         f"method={msg.funds.payment_method}")
     state = load(ctx, sender)
+    try:
+        await settle_commit(ctx, sender, state, msg)
+    except Exception:
+        ctx.logger.exception("PAYMENT commit handling failed")
+        await ctx.send(sender, CancelPayment(transaction_id=msg.transaction_id, reason="We couldn't verify this payment."))
+    save(ctx, sender, state)
+
+
+async def settle_commit(ctx: Context, sender: str, state: dict, msg: CommitPayment):
     if msg.funds.payment_method != "stripe" or not msg.transaction_id:
         await ctx.send(sender, CancelPayment(transaction_id=msg.transaction_id, reason="Only card payments via Stripe are accepted."))
         return
@@ -374,7 +476,6 @@ async def on_commit(ctx: Context, sender: str, msg: CommitPayment):
         return
     await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
     await after_payment(ctx, sender, state, msg.transaction_id)
-    save(ctx, sender, state)
 
 
 @payments.on_message(RejectPayment)

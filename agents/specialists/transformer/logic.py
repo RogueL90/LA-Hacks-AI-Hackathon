@@ -72,8 +72,10 @@ def _free_walls(space: Space, room_id: str) -> list[dict]:
 
 
 def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Overlay]]:
-    room_id = profile.room_id or space.rooms[0].id
-    room = next(r for r in space.rooms if r.id == room_id)
+    rooms = {r.id: r for r in space.rooms}
+    largest = max(space.rooms, key=lambda r: (bounds(r)[1] - bounds(r)[0]) * (bounds(r)[3] - bounds(r)[2]))
+    room = rooms.get(profile.room_id or "", largest)
+    room_id = room.id
     goal = profile.goal or "home office"
     key = _goal_key(goal)
     walls = _free_walls(space, room_id)
