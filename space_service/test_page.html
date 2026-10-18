@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Space Build Test</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --muted:#667085; --line:#e4e7ec; --accent:#2f6fed; --bad:#c0392b; --good:#1e8e3e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111418; --card:#1a1f25; --ink:#e8eaed; --muted:#98a2b3; --line:#2b323b; --accent:#6b9bff; --bad:#ff7b6b; --good:#5fd38a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:end; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
+  input, select, button { font:inherit; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:7px 10px; }
+  input[type=file] { max-width: 100%; }
+  button { background: var(--accent); color:#fff; border:0; cursor:pointer; font-weight:600; padding:8px 18px; }
+  button:disabled { opacity:.5; cursor:wait; }
+  .stats { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:10px; }
+  .stat { border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .stat b { display:block; font-size:20px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size:12px; color:var(--muted); }
+  .status { font-size:14px; color:var(--muted); min-height:1.5em; }
+  .err { color: var(--bad); white-space: pre-wrap; }
+  table { width:100%; border-collapse: collapse; font-size:13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color: var(--muted); font-weight:500; }
+  .scroll { overflow-x:auto; }
+  a { color: var(--accent); }
+  pre { max-height: 360px; overflow:auto; font-size:12px; background:var(--bg); padding:10px; border-radius:6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Space build latency test</h1>
+  <p class="sub">Upload a walkthrough video (or photos). This runs the real pipeline: frames, then Claude, then scale and layout.</p>
+
+  <div class="card">
+    <div class="row">
+      <label>Video or photos <input id="file" type="file" accept="video/*,image/*" multiple></label>
+      <label>Max frames <input id="frames" type="number" min="1" max="60" value="30" style="width:90px"></label>
+      <label>Effort
+        <select id="effort"><option>low</option><option>medium</option><option>high</option></select>
+      </label>
+      <button id="run">Run build</button>
+    </div>
+    <p class="status" id="status"></p>
+  </div>
+
+  <div class="card" id="result" hidden>
+    <div class="stats" id="stats"></div>
+    <p id="links"></p>
+    <div class="scroll"><table id="objects"></table></div>
+    <details><summary>Raw response</summary><pre id="raw"></pre></details>
+  </div>
+
+  <div class="card" id="historyCard" hidden>
+    <strong>Runs this session</strong>
+    <div class="scroll"><table id="history"></table></div>
+  </div>
+</main>
+<script>
+// Claude Sonnet 5.5 list price, USD per million tokens.
+const PRICE_IN = 2.0, PRICE_OUT = 10.0;
+const $ = (id) => document.getElementById(id);
+const runs = [];
+
+function stat(label, value) {
+  return `<div class="stat"><b>${value}</b><span>${label}</span></div>`;
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+$("run").onclick = async () => {
+  const files = [...$("file").files];
+  if (!files.length) { $("status").textContent = "Pick a file first."; return; }
+  $("run").disabled = true;
+  $("result").hidden = true;
+  const started = performance.now();
+  try {
+    $("status").textContent = `Uploading ${files.length} file(s)...`;
+    const urls = [];
+    for (const f of files) {
+      const form = new FormData();
+      form.append("file", f);
+      const res = await fetch("/media/upload", { method: "POST", body: form });
+      if (!res.ok) throw new Error(`upload failed: HTTP ${res.status}`);
+      urls.push((await res.json()).url);
+    }
+    const uploadS = (performance.now() - started) / 1000;
+
+    $("status").textContent = "Building (frames, then Claude)...";
+    const tick = setInterval(() => {
+      $("status").textContent = `Building... ${((performance.now() - started) / 1000).toFixed(0)} s`;
+    }, 1000);
+    let data;
+    try {
+      const res = await fetch("/debug/build", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ media_urls: urls, max_frames: +$("frames").value, effort: $("effort").value }),
+      });
+      data = await res.json();
+    } finally { clearInterval(tick); }
+    const wallS = (performance.now() - started) / 1000;
+    render(data, uploadS, wallS, files);
+  } catch (e) {
+    $("status").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  } finally {
+    $("run").disabled = false;
+  }
+};
+
+function render(data, uploadS, wallS, files) {
+  const s = data.stats || {};
+  const cost = s.input_tokens != null ? (s.input_tokens * PRICE_IN + s.output_tokens * PRICE_OUT) / 1e6 : null;
+  $("status").innerHTML = data.ok
+    ? `Done in ${wallS.toFixed(1)} s.`
+    : `<span class="err">Build failed: ${esc(data.error)}</span>`;
+
+  $("stats").innerHTML = [
+    stat("upload (browser)", `${uploadS.toFixed(1)} s`),
+    stat("frame extraction", s.frames_s != null ? `${s.frames_s} s` : "–"),
+    stat("Claude call", s.llm_s != null ? `${s.llm_s} s` : "–"),
+    stat("scale + layout", s.post_s != null ? `${s.post_s} s` : "–"),
+    stat("server total", s.total_s != null ? `${s.total_s} s` : "–"),
+    stat("end to end", `${wallS.toFixed(1)} s`),
+    stat("frames sent", s.frames ?? "–"),
+    stat("input tokens", s.input_tokens?.toLocaleString() ?? "–"),
+    stat("output tokens", s.output_tokens?.toLocaleString() ?? "–"),
+    stat("est. cost", cost != null ? `$${cost.toFixed(4)}` : "–"),
+  ].join("");
+
+  const space = data.space;
+  $("links").innerHTML = space
+    ? `<b>${esc(space.space_id)}</b>: ${space.rooms.length} rooms, ${space.doors.length} doors, ${space.objects.length} objects, scale ${esc(space.scale_method)} (${space.scale_confidence}) · <a href="${esc(space.viewer_url)}" target="_blank">open in viewer</a> · <a href="/spaces/${esc(space.space_id)}" target="_blank">JSON</a>`
+    : "";
+  $("objects").innerHTML = space
+    ? `<tr><th>id</th><th>label</th><th>room</th><th>size (m)</th><th>conf</th></tr>` +
+      space.objects.map((o) => `<tr><td>${esc(o.id)}</td><td>${esc(o.label)}</td><td>${esc(o.room_id)}</td><td>${o.size.map((v) => v.toFixed(2)).join(" × ")}</td><td>${o.confidence}</td></tr>`).join("")
+    : "";
+  $("raw").textContent = JSON.stringify(data, null, 2);
+  $("result").hidden = false;
+
+  runs.push({ name: files.map((f) => f.name).join(", "), mb: files.reduce((a, f) => a + f.size, 0) / 1e6, effort: s.effort || $("effort").value, s, cost, wallS, ok: data.ok, objects: space?.objects.length });
+  $("history").innerHTML = `<tr><th>file</th><th>MB</th><th>effort</th><th>frames</th><th>Claude s</th><th>total s</th><th>in tok</th><th>out tok</th><th>cost</th><th>objects</th></tr>` +
+    runs.map((r) => `<tr><td>${esc(r.name)}</td><td>${r.mb.toFixed(1)}</td><td>${esc(r.effort)}</td><td>${r.s.frames ?? "–"}</td><td>${r.s.llm_s ?? "–"}</td><td>${r.wallS.toFixed(1)}</td><td>${r.s.input_tokens ?? "–"}</td><td>${r.s.output_tokens ?? "–"}</td><td>${r.cost != null ? "$" + r.cost.toFixed(4) : "–"}</td><td>${r.ok ? r.objects : "failed"}</td></tr>`).join("");
+  $("historyCard").hidden = false;
+}
+</script>
+</body>
+</html>
