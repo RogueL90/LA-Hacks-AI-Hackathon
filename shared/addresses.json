@@ -1,0 +1,13 @@
+{
+  "coordinator": "agent1qvm538zn9uf29vfhpjel0za46e6h6wvedfzqcwk2tvpu67xfsch3ys8xwhn",
+  "space_builder": "agent1q04a4zkyrsdygu7zlr29hm03ry0qmhh46kk7swa5zpwdp8mlv8ffkvac99f",
+  "elder": "agent1qd2d5llel98ykvgmzmgx2mg8wrl5k8kcsqfe8nuwu5guwfcy7f3agww2kcs",
+  "baby": "agent1qgcel5jztzr2nm02j9n0fkzszvxns227kypmzgp9wuyqet9742d7xuj2tq2",
+  "transformer": "agent1qw2pud606kxea08hew4m07v2svc40gwy79xfg7k58wj7jg3x92j8vnyc8r7",
+  "claim": "agent1qddm80dennd5spt7t9xphfr9dy4w54jmkkk97dll596hx2mdy30nc08r7jn",
+  "product_finder": "agent1qgaym3497erjuvkhm059hl0vlp4wm42cdmzh2vl7gh6waw99leh5zmffjhm",
+  "cart": "agent1qwenr9x7vj0w4vdypv0emnywcqjar6kwt2uydznsqfpeqdv9vdes695pwk2",
+  "payment_verifier": "agent1qw5m4pswtznq6f3th6g5quuw26360lsj6mcer8x8suy6mlzxm4xqksu8khg",
+  "insurance_filer": "agent1qg6dvtwfkwvrn7axvssad9u3ngvt7mgnrjfyhfezf0ma66s9ezgdwzkk26g",
+  "recovery": "agent1qf43qy8qq06er7ep5swhm5wmhx502t6ukmgywpl7tdk5sfjz32qlzjdxcuq"
+}
