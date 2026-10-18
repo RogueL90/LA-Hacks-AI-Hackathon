@@ -11,11 +11,20 @@ from shared.models import Overlay, Space
 SPACE_SERVICE_URL = os.getenv("SPACE_SERVICE_URL", "").rstrip("/")
 
 
-async def build_space(media_urls: list[str], timeout_s: float = 150) -> Space:
+VIEWER_BASE_URL = os.getenv("VIEWER_BASE_URL", "").rstrip("/")
+# Aditya's service still names the space transformer mode "interior".
+SERVICE_MODE = {"transform": "interior"}
+
+
+async def build_space(media_urls: list[str], job_id: str, timeout_s: float = 150) -> Space:
+    """POST /spaces/build -> SpaceBuildResult {job_id, ok, space, error}."""
     async with httpx.AsyncClient(timeout=timeout_s) as client:
-        r = await client.post(f"{SPACE_SERVICE_URL}/spaces/build", json={"media_urls": media_urls})
+        r = await client.post(f"{SPACE_SERVICE_URL}/spaces/build", json={"job_id": job_id, "media_urls": media_urls})
         r.raise_for_status()
-        return Space.model_validate(r.json())
+        result = r.json()
+    if not result.get("ok") or not result.get("space"):
+        raise RuntimeError(f"Space Service could not build the home: {result.get('error')}")
+    return Space.model_validate(result["space"])
 
 
 async def get_space(space_id: str) -> Space:
@@ -27,14 +36,20 @@ async def get_space(space_id: str) -> Space:
         return Space.model_validate(r.json())
 
 
-async def post_overlays(space_id: str, mode: str, overlays: list[Overlay]) -> dict:
+async def post_overlays(space_id: str, mode: str, overlays: list[Overlay], job_id: str = "") -> dict:
     """Store overlays for the viewer. Returns {"overlay_set_id", "viewer_url", "snapshot_url"} (empty without the service)."""
     if not SPACE_SERVICE_URL or space_id == DEMO_SPACE_ID:
         return {}
+    service_mode = SERVICE_MODE.get(mode, mode)
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             f"{SPACE_SERVICE_URL}/spaces/{space_id}/overlays",
-            json={"mode": mode, "overlays": [o.model_dump() for o in overlays]},
+            json={"mode": service_mode, "job_id": job_id, "overlays": [o.model_dump() for o in overlays]},
         )
         r.raise_for_status()
-        return r.json()
+        overlay_set_id = r.json()["overlay_set_id"]
+    return {
+        "overlay_set_id": overlay_set_id,
+        "viewer_url": f"{VIEWER_BASE_URL}/s/{space_id}?mode={service_mode}&o={overlay_set_id}" if VIEWER_BASE_URL else None,
+        "snapshot_url": f"{SPACE_SERVICE_URL}/spaces/{space_id}/snapshot.png?mode={service_mode}&o={overlay_set_id}&view=hero",
+    }

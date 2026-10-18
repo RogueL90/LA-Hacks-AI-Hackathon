@@ -31,7 +31,7 @@ async def handle(ctx: Context, sender: str, req: SpaceBuildRequest):
     snapshot = video_frame(req.media_urls[0], percent=10) if req.media_urls else ""
     if SPACE_SERVICE_URL:
         try:
-            space = await build_space(req.media_urls)
+            space = await build_space(req.media_urls, req.job_id)
             await ctx.send(sender, SpaceBuildResult(job_id=req.job_id, ok=True, space=space))
             return
         except Exception:

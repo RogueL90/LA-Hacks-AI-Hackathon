@@ -74,7 +74,8 @@ def intake_form(mode: str, rooms: list[dict]) -> dict:
     elif mode == "transform":
         fields = [
             {"name": "goal", "kind": "text", "label": "What should this space become? (e.g. home office)", "required": True},
-            {"name": "room_id", "kind": "select", "label": "Which room", "required": True, "options": rooms},
+            ({"name": "room_id", "kind": "select", "label": "Which room", "required": True, "options": rooms} if rooms
+             else {"name": "room_id", "kind": "text", "label": "Which room? (e.g. bedroom)", "required": True}),
             {"name": "requirements", "kind": "text", "label": "Anything it must have? (e.g. two monitors, video calls)", "required": False},
             {"name": "style", "kind": "text", "label": "Style (e.g. warm modern, japandi)", "required": False},
             {"name": "budget_usd", "kind": "number", "label": "Budget (USD)", "required": True},
@@ -188,6 +189,7 @@ def _hazard_results(result: ModeResult, image: str, fee_label: str | None) -> di
 
 def _transform_results(result: ModeResult, image: str, fee_label: str | None) -> dict:
     layout = [f for f in result.findings if f.id == "transform_wall"]
+    keeps = [f for f in result.findings if f.id.startswith("transform_keep")]
     moves = [f for f in result.findings if f.id.startswith("transform_move")]
     adds = [f for f in result.findings if f.id.startswith("transform_item")]
     rows = []
@@ -195,6 +197,9 @@ def _transform_results(result: ModeResult, image: str, fee_label: str | None) ->
         rows.append({"children": [{"type": "heading", "value": f.title, "level": 3},
                                   {"type": "text", "value": f.fix_summary or "", "style": "muted"},
                                   {"type": "badge", "label": "Layout", "variant": "info"}]})
+    for f in keeps:
+        rows.append({"children": [{"type": "heading", "value": f.title, "level": 3},
+                                  {"type": "badge", "label": "Keep", "variant": "info"}]})
     for f in moves:
         rows.append({"children": [{"type": "heading", "value": f.title, "level": 3},
                                   {"type": "text", "value": f.fix_summary or "", "style": "muted"},

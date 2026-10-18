@@ -33,7 +33,11 @@ def make_specialist(key: str, name: str, mode: str, description: str, analyze: A
         try:
             space = await get_space(req.space_id)
             summary, findings, overlays = analyze(space, req.profile)
-            stored = await post_overlays(space.space_id, mode, overlays)
+            try:
+                stored = await post_overlays(space.space_id, mode, overlays, req.job_id)
+            except Exception:
+                ctx.logger.exception(f"job={req.job_id} could not store overlays; results still go back")
+                stored = {}
             result = ModeResult(
                 job_id=req.job_id,
                 mode=mode,

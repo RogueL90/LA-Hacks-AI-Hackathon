@@ -4,8 +4,10 @@ Flow: video/photos -> Space Builder -> mode cards -> intake form -> specialist -
 findings + fix plan -> service fee via the Payment Protocol (Stripe, test mode).
 Session state lives in ctx.storage, keyed by the ASI:One sender.
 """
+import asyncio
 import json
 import re
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -34,7 +36,15 @@ from agents.specialists.baby.logic import analyze as baby_analyze
 from agents.specialists.claim.logic import analyze as claim_analyze
 from agents.specialists.elder.logic import analyze as elder_analyze
 from agents.specialists.transformer.logic import analyze as transformer_analyze
-from shared.chat import attachments, card_message, clean_text, parse_selection, text_message, video_frame
+from shared.chat import (
+    attachments,
+    card_message,
+    clean_text,
+    parse_selection,
+    text_message,
+    video_frame,
+    video_frame_at,
+)
 from shared.demo_space import demo_space
 from shared.models import (
     ModeRequest,
@@ -151,6 +161,7 @@ def has_answers(state: dict, mode: str) -> bool:
 
 
 async def route(ctx: Context, sender: str, state: dict, files: list[dict], selection: dict):
+    merge_build(ctx, sender, state)
     action = selection.get("action")
     mode = selection.get("mode")
     if mode == "baby" and not selection.get("child_age_months") and selection.get("age"):
@@ -167,7 +178,7 @@ async def route(ctx: Context, sender: str, state: dict, files: list[dict], selec
 
     if files:
         await on_media(ctx, sender, state, files, state.get("wanted_mode"))
-    elif not state.get("space_id") and action != "check_payment":
+    elif not state.get("job_id") and action != "check_payment":
         # Nothing to work on yet: remember what they asked for and ask for the home.
         wanted = cards.MODES.get(state.get("wanted_mode", ""), {}).get("title")
         if wanted or action != "other":
@@ -213,46 +224,97 @@ async def on_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
     pass
 
 
-async def on_media(ctx: Context, sender: str, state: dict, files: list[dict], mode: str | None = None):
+BUILD_WAIT_S = 50  # ASI:One's planner waits about 60 s for a reply
+
+
+def _build_key(ctx: Context, sender: str) -> str:
+    return f"build:{_key(ctx, sender)}"
+
+
+def home_intro(state: dict) -> str:
+    intro = f"Your home is mapped: {len(state['rooms'])} rooms and {state.get('object_count', 0)} objects."
+    if state.get("prebuilt"):
+        intro += " (Live 3D building is still in progress, so this run uses our demo apartment's measurements.)"
+    return intro
+
+
+def merge_build(ctx: Context, sender: str, state: dict) -> bool:
+    """Copy a finished background build into the conversation state. True once the home is ready."""
+    if state.get("space_id"):
+        return True
+    build = ctx.storage.get(_build_key(ctx, sender)) or {}
+    if build.get("status") != "done" or build.get("job_id") != state.get("job_id"):
+        return False
+    state.update({k: build[k] for k in ("space_id", "rooms", "prebuilt", "viewer_url", "object_count")})
+    state["stats"] = (f"{len(state['rooms'])} rooms · {state['object_count']} objects"
+                      + (" · demo measurements" if state["prebuilt"] else ""))
+    return True
+
+
+async def wait_for_home(ctx: Context, sender: str, state: dict, wait_s: float = BUILD_WAIT_S) -> bool:
+    deadline = time.monotonic() + wait_s
+    while not merge_build(ctx, sender, state):
+        if not state.get("job_id") or time.monotonic() > deadline:
+            return False
+        await asyncio.sleep(0.5)
+    return True
+
+
+def start_build(ctx: Context, sender: str, state: dict, files: list[dict]):
+    """Map the home in the background so the user can answer questions meanwhile."""
     job_id = str(uuid4())
     urls = [f["url"] for f in files]
-    reply, status = await ctx.send_and_receive(
-        ADDRESSES["space_builder"], SpaceBuildRequest(job_id=job_id, media_urls=urls),
-        response_type=SpaceBuildResult, timeout=180,
-    )
-    space: Space
-    if isinstance(reply, SpaceBuildResult) and reply.ok and reply.space:
-        space = reply.space
-    else:
-        ctx.logger.warning(f"job={job_id} space build failed ({status.detail}); using the demo home")
-        space = demo_space(snapshot_url=video_frame(urls[0]))
     video = next((f["url"] for f in files if f["mime_type"].startswith("video")), None)
     photos = [f["url"] for f in files if not f["mime_type"].startswith("video")] or urls
-    frames = {m: video_frame(video, info["frame"]) if video else photos[i % len(photos)]
-              for i, (m, info) in enumerate(cards.MODES.items())}
     state.update({
-        "job_id": job_id,
-        "media": urls,
-        "space_id": space.space_id,
-        "viewer_url": space.viewer_url,
-        "prebuilt": space.scale_method == "prebuilt",
-        "rooms": [{"value": r.id, "label": r.name} for r in space.rooms],
-        "frames": frames,
-        "result": None,
-        "payment": None,
+        "job_id": job_id, "media": urls, "video": video,
+        "frames": {m: video_frame(video, info["frame"]) if video else photos[i % len(photos)]
+                   for i, (m, info) in enumerate(cards.MODES.items())},
+        "space_id": None, "rooms": [], "stats": "Mapping your home in 3D…",
+        "result": None, "payment": None, "deliver": None,
     })
-    state["stats"] = f"{len(space.rooms)} rooms · {len(space.objects)} objects" + (" · demo measurements" if state["prebuilt"] else "")
-    intro = f"Your home is mapped: {len(space.rooms)} rooms and {len(space.objects)} objects."
-    if state["prebuilt"]:
-        intro += " (Live 3D building is still in progress, so this run uses our demo apartment's measurements.)"
+    key = _build_key(ctx, sender)
+    ctx.storage.set(key, {"status": "running", "job_id": job_id})
+
+    async def build():
+        reply, status = await ctx.send_and_receive(
+            ADDRESSES["space_builder"], SpaceBuildRequest(job_id=job_id, media_urls=urls),
+            response_type=SpaceBuildResult, timeout=180)
+        if isinstance(reply, SpaceBuildResult) and reply.ok and reply.space:
+            space = reply.space
+        else:
+            ctx.logger.warning(f"job={job_id} space build failed ({status.detail}); using the demo home")
+            space = demo_space(snapshot_url=video_frame(urls[0]))
+        ctx.storage.set(key, {
+            "status": "done", "job_id": job_id, "space_id": space.space_id,
+            "rooms": [{"value": r.id, "label": r.name} for r in space.rooms],
+            "prebuilt": space.scale_method == "prebuilt", "viewer_url": space.viewer_url,
+            "object_count": len(space.objects),
+        })
+        ctx.logger.info(f"job={job_id} home ready: {len(space.rooms)} rooms, {len(space.objects)} objects")
+        # Answers arrived while the home was still being mapped: post the results now.
+        later = load(ctx, sender)
+        if later.get("job_id") == job_id and later.get("deliver"):
+            selection = later.pop("deliver")
+            merge_build(ctx, sender, later)
+            try:
+                await on_intake(ctx, sender, later, selection, home_intro(later))
+            finally:
+                save(ctx, sender, later)
+
+    asyncio.get_running_loop().create_task(build())
+
+
+async def on_media(ctx: Context, sender: str, state: dict, files: list[dict], mode: str | None = None):
+    start_build(ctx, sender, state, files)
     if mode in cards.MODES and has_answers(state, mode):
-        # They already told us everything this mode needs, so run it straight away.
-        await on_intake(ctx, sender, state, {"mode": mode}, intro)
+        # They already told us everything this mode needs: wait for the home, then run it.
+        await on_intake(ctx, sender, state, {"mode": mode})
     elif mode in cards.MODES:
-        # The request already says what they want, so skip the menu and ask that mode's questions.
-        await on_choose_mode(ctx, sender, state, mode, intro)
+        # Ask this mode's questions while the home is being mapped.
+        await on_choose_mode(ctx, sender, state, mode, "Mapping your home in 3D now.")
     else:
-        await show_modes(ctx, sender, state, intro)
+        await show_modes(ctx, sender, state, "Mapping your home in 3D now. While that runs, what should we look at?")
 
 
 async def show_modes(ctx: Context, sender: str, state: dict, narration: str):
@@ -263,7 +325,7 @@ async def show_modes(ctx: Context, sender: str, state: dict, narration: str):
 
 
 async def on_choose_mode(ctx: Context, sender: str, state: dict, mode: str, intro: str = ""):
-    if mode not in cards.MODES or not state.get("space_id"):
+    if mode not in cards.MODES or not state.get("job_id"):
         await show_modes(ctx, sender, state, "Pick one of these to start.")
         return
     state["mode"] = mode
@@ -329,9 +391,17 @@ async def run_mode(ctx: Context, state: dict, mode: str, profile: Profile) -> Mo
 
 async def on_intake(ctx: Context, sender: str, state: dict, selection: dict, intro: str = ""):
     mode = selection.get("mode") or state.get("mode")
-    if mode not in cards.MODES or not state.get("space_id"):
+    if mode not in cards.MODES or not state.get("job_id"):
         await show_modes(ctx, sender, state, "Pick what you'd like to do first.")
         return
+    if not state.get("space_id"):
+        if not await wait_for_home(ctx, sender, state):
+            state["mode"] = mode
+            state["deliver"] = {**selection, "mode": mode}
+            await send(ctx, sender, text_message(
+                "Still mapping your home in 3D; it's a big one. I'll post your results here as soon as it's done."))
+            return
+        intro = intro or home_intro(state)
     selection = {**state.get("answers", {}), **selection}
     if mode == "transform":
         room_id = resolve_room(state, selection.get("room_id"))
@@ -358,10 +428,18 @@ async def on_intake(ctx: Context, sender: str, state: dict, selection: dict, int
     await show_results(ctx, sender, state, f"{intro} {result.summary} {next_step}".strip())
 
 
+def evidence_image(state: dict, finding) -> str | None:
+    """The moment in the user's own video where this finding was seen (public Cloudinary frame)."""
+    seconds = next((e.timestamp_s for e in finding.evidence if e.timestamp_s is not None), None)
+    video = state.get("video")
+    return video_frame_at(video, seconds) if video and seconds is not None else None
+
+
 async def show_results(ctx: Context, sender: str, state: dict, narration: str):
     result = ModeResult.model_validate(state["result"])
     fee = None if result.mode == "claim" else fee_label()
-    await send_card(ctx, sender, state, narration, "custom", cards.results_card(result, state["frames"][result.mode], fee))
+    hero = next((img for f in result.findings if (img := evidence_image(state, f))), None) or state["frames"][result.mode]
+    await send_card(ctx, sender, state, narration, "custom", cards.results_card(result, hero, fee))
 
 
 async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: str):
@@ -377,7 +455,7 @@ async def on_finding_detail(ctx: Context, sender: str, state: dict, finding_id: 
     if not finding:
         await show_modes(ctx, sender, state, "I couldn't find that item. Pick a mode to start again.")
         return
-    payload = cards.finding_detail(finding, state["frames"][result.mode])
+    payload = cards.finding_detail(finding, evidence_image(state, finding) or state["frames"][result.mode])
     await send_card(ctx, sender, state, finding.title, "detail", payload)
 
 

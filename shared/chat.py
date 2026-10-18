@@ -111,3 +111,11 @@ def video_frame(url: str, percent: int = 10, width: int = 800) -> str:
         framed = url.replace("/video/upload/", f"/video/upload/so_{percent}p,w_{width}/", 1)
         return re.sub(r"\.[A-Za-z0-9]+$", ".jpg", framed)
     return url
+
+
+def video_frame_at(url: str, seconds: float, width: int = 800) -> str | None:
+    """A public still `seconds` into an ASI:One (Cloudinary) video; None for other hosts."""
+    if "res.cloudinary.com" in url and "/video/upload/" in url:
+        framed = url.replace("/video/upload/", f"/video/upload/so_{max(seconds, 0):.1f},w_{width}/", 1)
+        return re.sub(r"\.[A-Za-z0-9]+$", ".jpg", framed)
+    return None

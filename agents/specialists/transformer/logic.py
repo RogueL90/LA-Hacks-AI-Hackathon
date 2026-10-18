@@ -3,13 +3,18 @@
 Checkpoint A: deterministic measurements plus a fixed item list per goal. Checkpoint B
 replaces the item list with a Claude-generated plan sized to the measured gaps.
 """
-from agents.specialists.geometry import bounds, footprint, inches
+from agents.specialists.geometry import bounds, footprint, inches, is_movable
 from shared.models import Finding, Measurement, Overlay, ProductQuery, Profile, Space
 
 WALKWAY_M = 0.9
 WALL_TOUCH_M = 0.35   # an object this close to a wall uses that wall
 
 # Items each goal needs: (title, query, max width in m or None)
+# Object types that already satisfy an item, so an existing desk isn't bought twice.
+SATISFIED_BY = {"Desk": {"desk"}, "Ergonomic office chair": {"chair"}, "Desk lamp": {"lamp_table"},
+                "Crib": {"crib"}, "Changing table": {"dresser"}, "Sleeper sofa": {"sofa", "bed"},
+                "Side table": {"side_table", "nightstand"}}
+
 GOAL_ITEMS = {
     "office": [
         ("Desk", "writing desk", 1.4),
@@ -91,8 +96,18 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
     ))
 
     keep = set(profile.keep_object_ids)
-    for o in space.objects:
-        if o.room_id == room_id and o.id not in keep and o.attributes.get("is_movable"):
+    in_room = [o for o in space.objects if o.room_id == room_id]
+    present = {o.type for o in in_room}
+    wanted = GOAL_ITEMS[key]
+    needed_types = set().union(*(SATISFIED_BY.get(title, set()) for title, _, _ in wanted))
+    for o in in_room:
+        if o.type in needed_types:
+            findings.append(Finding(
+                id=f"transform_keep_{o.id}", kind="suggestion", title=f"Keep the {o.label.lower()}",
+                object_ids=[o.id], fix_summary="Already right for the new use",
+            ))
+    for o in in_room:
+        if o.id not in keep and o.type not in needed_types and is_movable(o):
             findings.append(Finding(
                 id=f"transform_move_{o.id}", kind="suggestion", title=f"Move the {o.label.lower()} out",
                 object_ids=[o.id],
@@ -100,7 +115,9 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
             ))
             overlays.append(Overlay(type="ghost_object", data={"object_id": o.id, "action": "remove"}))
 
-    for i, (title, query, max_w) in enumerate(GOAL_ITEMS[key]):
+    for i, (title, query, max_w) in enumerate(wanted):
+        if SATISFIED_BY.get(title, set()) & present:
+            continue  # the room already has one
         constraints = {}
         if max_w is not None:
             fit_w = min(max_w, best["free"] - WALKWAY_M / 3)
