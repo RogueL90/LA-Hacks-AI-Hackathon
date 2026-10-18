@@ -179,3 +179,24 @@ def test_commit_payment_from_asi_one_completes_only_when_paid(verifier_agent, fa
     fake_stripe["paid"].add("cs_test_embedded_1")
     run(coord.settle_commit(ctx, USER, state, commit))
     assert ctx.payments()[-1] == "CompletePayment" and state["payment"]["status"] == "paid"
+
+
+def test_payment_notice_and_ive_paid_together_ask_the_verifier_once(verifier_agent, fake_stripe):
+    """Live: ASI:One's CommitPayment and the user's "I've paid" arrived together; both asked the verifier
+    in one conversation, one timed out, and the receipt could go out twice."""
+    from uagents_core.contrib.protocols.payment import CommitPayment, Funds
+
+    ctx = FakeCtx(agents={"payment_verifier": verifier_agent}, session="pay-race")
+    state = cart_state(ctx, fake_stripe)
+    fake_stripe["paid"].add("cs_test_embedded_1")
+    commit = CommitPayment(funds=Funds(currency="USD", amount="1.00", payment_method="stripe"),
+                           recipient="me", transaction_id="cs_test_embedded_1")
+
+    async def both():
+        await asyncio.gather(coord.settle_commit(ctx, USER, dict(state), commit),
+                             coord.check_payment(ctx, USER, dict(state)))
+
+    run(both())
+    assert verifier_agent.calls == ["cs_test_embedded_1"]  # one request, not two at once
+    receipts = [t for t in ctx.texts() if t.startswith("Payment received")]
+    assert len(receipts) == 1  # the second path says "You're all paid" instead

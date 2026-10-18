@@ -127,3 +127,14 @@ def fake_stripe(monkeypatch):
     monkeypatch.setattr(stripe_pay, "is_paid", is_paid)
     monkeypatch.setattr(stripe_pay, "enabled", lambda: True)
     return state
+
+
+@pytest.fixture(autouse=True)
+def fresh_payment_memory():
+    """The coordinator remembers confirmed payments per conversation; each test starts clean."""
+    from agents.coordinator import agent as coord
+
+    coord.CONFIRMED.clear()
+    coord.RECEIPTS.clear()
+    coord.VERIFY_LOCKS.clear()
+    yield

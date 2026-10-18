@@ -566,7 +566,7 @@ def fee_label(state: dict | None = None) -> str:
 
 
 SHOP_TIMEOUT_S = 50   # Product Finder stops each search at 30 s and runs them all at once
-CLAIM_PRICE_LIMIT = 40  # replacement-price searches per claim (the rest are marked to price by hand)
+CLAIM_PRICE_LIMIT = 120  # replacement-price searches per claim (most come from the deep-search pools)
 
 
 async def ask(ctx: Context, agent: str, request, response_type, timeout: float):
@@ -760,6 +760,14 @@ async def request_fee(ctx: Context, sender: str, state: dict):
     ctx.logger.info(f"job={reference} fee requested: Stripe {t_stripe:.1f} s, replies {time.monotonic() - t0 - t_stripe:.1f} s")
 
 
+# ASI:One's payment notice (CommitPayment) and the user's "I've paid" tap can arrive together. Two
+# verifier requests in one conversation would both get the first reply (uagents matches replies by
+# agent and session), so they take turns, and a checkout already confirmed isn't asked about again.
+VERIFY_LOCKS: dict[str, asyncio.Lock] = {}
+CONFIRMED: set[tuple[str, str]] = set()   # (conversation, checkout session) known paid
+RECEIPTS: set[tuple[str, str]] = set()    # (conversation, checkout session) receipt already sent
+
+
 async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
     """Ask Pranay's Payment Verifier; if it doesn't answer, check with Stripe directly.
 
@@ -769,6 +777,17 @@ async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
     if session_id not in payment.get("stripe_sessions", []):
         ctx.logger.warning(f"PAYMENT rejected: {session_id} is not one of this conversation's checkout sessions")
         return False
+    async with VERIFY_LOCKS.setdefault(str(ctx.session), asyncio.Lock()):
+        if (str(ctx.session), session_id) in CONFIRMED:
+            return True
+        paid = await _verify(ctx, state, session_id)
+        if paid:
+            CONFIRMED.add((str(ctx.session), session_id))
+        return paid
+
+
+async def _verify(ctx: Context, state: dict, session_id: str) -> bool:
+    payment = state.get("payment") or {}
     fee = payment.get("fee") or format_service_fee_usd(FLAT_SERVICE_FEE_USD)
     req = VerifyPaymentRequest(job_id=state.get("job_id") or "", service_fee_usd=fee, transaction_id=session_id)
     reply = await ask(ctx, "payment_verifier", req, VerifyPaymentResult, 20)
@@ -806,6 +825,9 @@ async def find_paid_session(ctx: Context, state: dict) -> str | None:
 
 
 async def after_payment(ctx: Context, sender: str, state: dict, session_id: str, again: bool = False):
+    if (str(ctx.session), session_id) in RECEIPTS:
+        again = True  # the other path (payment notice or "I've paid") already sent the receipt
+    RECEIPTS.add((str(ctx.session), session_id))
     state["payment"] = {**state.get("payment", {}), "status": "paid", "session": session_id}
     cart = CartResult.model_validate(state["cart"]) if state.get("cart") else None
     links = "\n".join(f"- [{_short(q.title)}]({q.url}): ${q.price_usd:,.2f} at {q.merchant}"
