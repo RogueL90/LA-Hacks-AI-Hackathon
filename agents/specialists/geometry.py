@@ -10,7 +10,7 @@ M_TO_IN = 39.37
 
 LIGHT_TYPES = {"light", "ceiling_light", "lamp_floor", "lamp_table", "night_light"}
 MOVABLE_TYPES = {"chair", "armchair", "stool", "ottoman", "pouf", "clutter", "side_table", "laundry_basket", "box"}
-TIP_OVER_TYPES = {"bookshelf", "dresser", "tv", "tv_stand", "wardrobe", "cabinet"}
+TIP_OVER_TYPES = {"bookshelf", "dresser", "tv", "tv_stand", "wardrobe"}  # cabinets are usually built in (vanities, kitchen)
 ROOM_KINDS = [
     ("bathroom", ("bath", "restroom", "toilet", "powder", "wc", "ensuite", "en_suite")),
     ("bedroom", ("bed", "nursery", "primary", "master", "guest")),
