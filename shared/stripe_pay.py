@@ -1,5 +1,5 @@
-"""Stripe Checkout (test mode only) for the service fee: an embedded session for the Payment
-Protocol card and a hosted session whose link we post in the chat as a fallback.
+"""Stripe Checkout (test mode only): one embedded session per order, which ASI:One's Pay button
+opens in the chat through the Payment Protocol (the cart's products as lines plus the service fee).
 """
 import asyncio
 import os
@@ -53,6 +53,7 @@ def _line_items(description: str, amount_usd: str, items: list[dict] | None = No
 
 
 def _create(reference: str, description: str, amount_usd: str, items: list[dict] | None = None) -> dict:
+    """One embedded Checkout Session: ASI:One's Pay button opens it in the chat (Payment Protocol)."""
     client = _client()
     expires_at = int(time.time()) + 1800  # Stripe's minimum is 30 minutes
     metadata = {"reference": reference, "service": "last_mile_home"}
@@ -61,13 +62,6 @@ def _create(reference: str, description: str, amount_usd: str, items: list[dict]
         "redirect_on_completion": "if_required",
         "mode": "payment",
         "return_url": f"{RETURN_URL}?session_id={{CHECKOUT_SESSION_ID}}",
-        "expires_at": expires_at,
-        "line_items": _line_items(description, amount_usd, items),
-        "metadata": metadata,
-    })
-    hosted = client.v1.checkout.sessions.create(params={
-        "mode": "payment",
-        "success_url": f"{RETURN_URL}?session_id={{CHECKOUT_SESSION_ID}}",
         "expires_at": expires_at,
         "line_items": _line_items(description, amount_usd, items),
         "metadata": metadata,
@@ -83,8 +77,6 @@ def _create(reference: str, description: str, amount_usd: str, items: list[dict]
             "amount_cents": str(_cents(amount_usd)),
         },
         "embedded_id": embedded.id,
-        "hosted_id": hosted.id,
-        "hosted_url": hosted.url,
     }
 
 

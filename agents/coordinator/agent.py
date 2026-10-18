@@ -658,9 +658,10 @@ async def shop(ctx: Context, sender: str, state: dict):
         return
     if state.get("cart") and (state.get("payment") or {}).get("status") in ("requested", "rejected") \
             and state.get("cart_for") == state.get("chosen_fixes"):
-        await send_card(ctx, sender, state, "Here's your cart again. Pay the service fee to get the store links.", "custom",
+        await send_card(ctx, sender, state, "Here's your cart again. Tap Pay on the payment request to check out.", "custom",
                         cards.cart_card(CartResult.model_validate(state["cart"]), state.get("profile", {}).get("budget_usd"),
-                                        fee_label(state), state["payment"]["checkout_url"], state.get("cart_notes")))
+                                        fee_label(state), None, state.get("cart_notes"),
+                                        f"${state['payment'].get('amount') or fee_label(state)[1:]}"), terminal=True)
         return
     queries = plan_queries(state)
     if not queries:
@@ -752,8 +753,7 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         "reference": reference,
         "fee": fee,
         "amount": total,
-        "stripe_sessions": [checkout["embedded_id"], checkout["hosted_id"]],
-        "checkout_url": checkout["hosted_url"],
+        "stripe_sessions": [checkout["embedded_id"]],  # one checkout: ASI:One's Pay button opens it
     }
     budget = (state.get("profile") or {}).get("budget_usd")
     notes = state.get("cart_notes") or {}
@@ -769,10 +769,10 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         + "\n".join(f"- {_short(q.title)}: ${q.price_usd:,.2f}" + (f" × {_qty(q)}" if _qty(q) > 1 else "")
                     + f" at {q.merchant}" for q in cart.items[:10])
         + f"\n\nProducts ${cart.subtotal_usd:,.2f} + ${fee} service fee = **${total}**.\n\n"
-        f"**[Check out ${total} with Stripe]({checkout['hosted_url']})** (or ASI:One's Pay button). It's a demo "
-        "checkout in Stripe test mode: use card 4242 4242 4242 4242, nothing is really charged or shipped. "
+        f"Tap **Pay** on the payment request to check out **${total}** with Stripe. It's a demo checkout in "
+        "Stripe test mode: use card 4242 4242 4242 4242, nothing is really charged or shipped. "
         "I'll confirm your order here as soon as it goes through.",
-        "custom", cards.cart_card(cart, budget, f"${fee}", checkout["hosted_url"], notes, f"${total}"), terminal=True)
+        "custom", cards.cart_card(cart, budget, f"${fee}", None, notes, f"${total}"), terminal=True)
     watch_payment(ctx, sender, reference)
     ctx.logger.info(f"job={reference} checkout requested (${total}): Stripe {t_stripe:.1f} s, "
                     f"replies {time.monotonic() - t0 - t_stripe:.1f} s")
@@ -908,10 +908,10 @@ async def check_payment(ctx: Context, sender: str, state: dict):
     if session_id:
         await after_payment(ctx, sender, state, session_id)
         return
-    url = payment.get("checkout_url", "https://checkout.stripe.com")
-    await send_card(ctx, sender, state, f"I don't see the payment yet. **[Finish the Stripe checkout]({url})**: "
-                    "I'll post your store links here as soon as it goes through.",
-                    "custom", cards.payment_card(fee_label(state), url), terminal=True)
+    total = f"${payment.get('amount') or payment.get('fee') or FLAT_SERVICE_FEE_USD}"
+    await send_card(ctx, sender, state, f"I don't see the payment yet. Tap **Pay** on the payment request to "
+                    f"check out {total} with Stripe; I'll confirm your order here as soon as it goes through.",
+                    "custom", cards.payment_card(total, None), terminal=True)
 
 
 CLAIM_INLINE_WAIT_S = 30  # wait this long for the prices, then file and answer; else post the package later

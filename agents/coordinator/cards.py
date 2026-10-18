@@ -311,7 +311,7 @@ def _quote_row(q: ProductQuote, link: bool) -> dict:
     return {"children": children}
 
 
-def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_url: str, notes: dict | None = None,
+def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_url: str | None, notes: dict | None = None,
               total_label: str | None = None) -> dict:
     """The products found for the chosen fixes, then the service fee (store links come after paying)."""
     notes = notes or {}
@@ -338,29 +338,29 @@ def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_u
             {"type": "list", "items": [_quote_row(q, link=False) for q in cart.items[:10]]},
             *extra,
             {"type": "divider"},
-            {"type": "text", "value": f"Check out {total_label or fee_label} with the Stripe link in the message above "
-                                      "or ASI:One's Pay button. Demo checkout in Stripe test mode: card 4242 4242 4242 "
-                                      "4242, any future date, any CVC. Nothing is really charged or shipped."},
+            {"type": "text", "value": f"Tap Pay on the payment request to check out {total_label or fee_label} with "
+                                      "Stripe: one checkout for the whole cart and the service fee. Demo checkout in "
+                                      "Stripe test mode: card 4242 4242 4242 4242, any future date, any CVC. Nothing is "
+                                      "really charged or shipped."},
             {"type": "text", "value": "Your order confirmation and the store pages appear here as soon as Stripe "
                                       "confirms the payment.", "style": "muted"},
         ],
     }}
 
 
-def payment_card(fee_label: str, checkout_url: str) -> dict:
+def payment_card(total_label: str, checkout_url: str | None = None) -> dict:
     return {"root": {
         "type": "section",
-        "title": "One step left",
-        "subtitle": f"Service fee {fee_label}",
+        "title": "Waiting for your payment",
+        "subtitle": f"Your order: {total_label}",
         "children": [
-            {"type": "text", "value": "Pay the service fee to get the store link for every product in your cart."},
+            {"type": "text", "value": "Tap Pay on the payment request to check out with Stripe. Your order "
+                                      "confirmation appears here as soon as Stripe confirms the payment."},
             {"type": "group", "direction": "row", "gap": 6, "children": [
                 {"type": "badge", "label": "Secure Stripe checkout", "variant": "success"},
                 {"type": "badge", "label": "Test mode", "variant": "info"},
             ]},
-            {"type": "text", "value": "Pay with the Stripe link in the message above (test card 4242 4242 4242 4242 · "
-                                      "any future date · any CVC). Your store links appear here as soon as Stripe "
-                                      "confirms the payment.", "style": "muted"},
+            {"type": "text", "value": "Test card 4242 4242 4242 4242 · any future date · any CVC", "style": "muted"},
         ],
     }}
 

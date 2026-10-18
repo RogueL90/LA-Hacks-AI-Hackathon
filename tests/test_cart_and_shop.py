@@ -92,7 +92,7 @@ def test_approve_builds_a_cart_and_asks_for_the_fee_before_showing_it(fake_strip
     kinds = [type(m).__name__ for _, m in ctx.sent]
     assert kinds.index("RequestPayment") < kinds.index("ChatMessage")  # payment request first, then the card
     assert ctx.last_card_title().startswith("Your cart · 2 products")
-    assert state["payment"]["fee"] == "1.00" and len(state["payment"]["stripe_sessions"]) == 2
+    assert state["payment"]["fee"] == "1.00" and len(state["payment"]["stripe_sessions"]) == 1  # one checkout
 
 
 def test_approve_uses_the_search_started_with_the_results(fake_stripe):
@@ -217,7 +217,7 @@ def test_paying_without_tapping_anything_posts_the_receipt(fake_stripe, monkeypa
         await coord.shop(ctx, USER, state)
         coord.save(ctx, USER, state)           # what on_chat does after each message
         assert ctx.last_card_title().startswith("Your cart")
-        fake_stripe["paid"].add("cs_test_hosted_1")  # the user pays with the link; taps nothing
+        fake_stripe["paid"].add("cs_test_embedded_1")  # the user pays in the checkout; taps nothing else
         for _ in range(100):
             await asyncio.sleep(0.01)
             if ctx.last_card_title() == "Order placed (demo)":
@@ -256,7 +256,7 @@ def test_after_the_order_the_wrap_up_has_summary_orders_next_steps_and_the_3d_li
     async def flow():
         await coord.shop(ctx, USER, state)
         coord.save(ctx, USER, state)
-        fake_stripe["paid"].add("cs_test_hosted_1")
+        fake_stripe["paid"].add("cs_test_embedded_1")
         for _ in range(100):
             await asyncio.sleep(0.01)
             if ctx.last_card_title() == "Order placed (demo)":
