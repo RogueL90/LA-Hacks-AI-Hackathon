@@ -7,6 +7,7 @@ from agents.specialists.geometry import (
     pin,
     LIGHT_TYPES,
     evidence_for,
+    floor_height,
     footprint,
     gap_x,
     inches,
@@ -15,39 +16,55 @@ from agents.specialists.geometry import (
 )
 from shared.models import Evidence, Finding, Measurement, Overlay, ProductQuery, Profile, Space
 
-# Clear width needed along a path, in meters (ADA: 32 in door clear width, 36 in continuous path).
-CLEAR_WIDTH = {"wheelchair": 0.91}
-DEFAULT_CLEAR = 0.81
+# Clear width each mobility aid needs, in meters. Wheelchair: ADA 32 in door clear width and
+# 36 in continuous path. Walker: a 26 in frame plus hands. A cane or no aid fits any normal door.
+DOOR_CLEAR = {"wheelchair": 0.81, "walker": 0.76, "rollator": 0.76}
+PATH_CLEAR = {"wheelchair": 0.91, "walker": 0.81, "rollator": 0.81}
+DEFAULT_DOOR, DEFAULT_PATH = 0.61, 0.71
 NIGHT_PATH = {"bedroom", "hallway", "bathroom"}
 WALK_AREAS = NIGHT_PATH | {"living", "kitchen", "dining", "office", "laundry", "other"}
 COMFORT_TOILET_HEIGHT = 0.43  # 17 in seat height (ADA range 17-19 in)
+# Clutter is a trip hazard only on the floor of a room people walk through (not on a table,
+# a wall, or in a closet or laundry room), and it is one finding per room, not one per pile.
+CLUTTER_ROOMS = NIGHT_PATH | {"living", "kitchen", "dining", "office"}
+ON_FLOOR_M = 0.15
 
 
 def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Overlay]]:
     aid = (profile.mobility_aid or "none").lower()
-    need = CLEAR_WIDTH.get(aid, DEFAULT_CLEAR)
+    need = PATH_CLEAR.get(aid, DEFAULT_PATH)
+    door_need = DOOR_CLEAR.get(aid, DEFAULT_DOOR)
     kinds = kinds_by_room(space)
     names = {r.id: r.name for r in space.rooms}
     findings: list[Finding] = []
     overlays: list[Overlay] = []
     objs = {o.id: o for o in space.objects}
 
-    def add(f: Finding, pin_at: list[float] | None):
+    def add(f: Finding, pin_at: list[float] | None, each: list | None = None, label: str = ""):
         findings.append(f)
-        pin(overlays, f, pin_at)
+        if not each:
+            pin(overlays, f, pin_at)
+        for o in each or []:  # a grouped finding still marks every object in the 3D view
+            pin(overlays, f.copy(update={"title": label, "object_ids": [o.id]}), o.position)
 
-    # 1. Doors on the night path narrower than the clear width the person needs.
+    # 1. Doors on the night path narrower than the person's mobility aid needs (one finding per room).
+    narrow: dict[str, list] = {}
     for door in space.doors:
-        if kinds.get(door.room_id) in NIGHT_PATH and door.width_m < need:
-            add(Finding(
-                id=f"elder_{door.id}", kind="hazard", severity=4,
-                title=f"Narrow {names.get(door.room_id, 'room').lower()} door",
-                measurements=[Measurement(name="door_width", value=inches(door.width_m), unit="in",
-                                          required=inches(need), passes=False)],
-                fix_summary="Swap to offset (swing-clear) hinges, which add up to 2 in of clear width",
-                product_query=ProductQuery(query="swing clear offset door hinges 3.5 in", quantity=2),
-                evidence=[Evidence(note="Door width measured from the 3D model")],
-            ), door.position)
+        if kinds.get(door.room_id) in NIGHT_PATH and door.width_m < door_need:
+            narrow.setdefault(door.room_id, []).append(door)
+    for room_id, doors in narrow.items():
+        room = names.get(room_id, "room").lower()
+        tightest = min(doors, key=lambda d: d.width_m)
+        add(Finding(
+            id=f"elder_{tightest.id}", kind="hazard", severity=4,
+            title=f"{len(doors)} narrow {room} doors" if len(doors) > 1 else f"Narrow {room} door",
+            measurements=[Measurement(name="door_width", value=inches(tightest.width_m), unit="in",
+                                      required=inches(door_need), passes=False)],
+            fix_summary="Swap to offset (swing-clear) hinges, which add up to 2 in of clear width",
+            product_query=ProductQuery(query="swing clear offset door hinges 3.5 in", quantity=2 * len(doors)),
+            evidence=[Evidence(note=f"Door width measured from the 3D model; {inches(door_need)} in needed with a {aid}"
+                               if aid != "none" else "Door width measured from the 3D model")],
+        ), tightest.position)
 
     # 2. Furniture squeezing the walk from the bed to the bedroom door.
     beds = [o for o in space.objects if o.type == "bed" and "crib" not in o.label.lower()]
@@ -98,14 +115,6 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 product_query=ProductQuery(query="floor cord cover raceway 6 ft"),
                 evidence=evidence_for(o, "Cord crosses a walking path"),
             ), o.position)
-        elif o.type == "clutter" and kind in WALK_AREAS:
-            add(Finding(
-                id=f"elder_{o.id}", kind="hazard", severity=4 if kind in NIGHT_PATH else 3,
-                title=f"Clutter on the floor in the {where}",
-                object_ids=[o.id],
-                fix_summary="Clear the floor or move the items onto a shelf (CDC STEADI)",
-                evidence=evidence_for(o, f"{o.label.capitalize()} on the floor"),
-            ), o.position)
         elif o.type == "stairs" and not o.attributes.get("handrail_both_sides"):
             add(Finding(
                 id=f"elder_{o.id}", kind="hazard", severity=5, title="Stairs without confirmed handrails",
@@ -114,6 +123,22 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 product_query=ProductQuery(query="stair handrail kit wall mounted"),
                 evidence=evidence_for(o, "Handrails on both sides not seen in the video"),
             ), o.position)
+
+    # 3b. Clutter on the floor: one finding per room, worst rooms (night path) first.
+    piles: dict[str, list] = {}
+    for o in space.objects:
+        if o.type == "clutter" and floor_height(o) < ON_FLOOR_M and kinds.get(o.room_id) in CLUTTER_ROOMS:
+            piles.setdefault(o.room_id, []).append(o)
+    for room_id, items in piles.items():
+        where = names.get(room_id, "home").lower()
+        what = ", ".join(o.label.lower() for o in items[:3]) + (f" and {len(items) - 3} more" if len(items) > 3 else "")
+        add(Finding(
+            id=f"elder_clutter_{room_id}", kind="hazard", severity=4 if kinds.get(room_id) in NIGHT_PATH else 3,
+            title=f"Clutter on the {where} floor",
+            object_ids=[o.id for o in items],
+            fix_summary=f"Clear the floor ({what}) or move it onto a shelf (CDC STEADI)",
+            evidence=evidence_for(items[0], f"{items[0].label.capitalize()} on the floor"),
+        ), items[0].position, each=items, label="Clutter")
 
     # 4. Lighting for night trips: no night light seen on the bedroom-to-bathroom path.
     if profile.night_trips is not False and any(k in ("bedroom", "bathroom") for k in kinds.values()):

@@ -6,6 +6,7 @@ Run: .venv/bin/python -m scripts.edge_cases [scenario-number ...]
 """
 import asyncio
 import json
+import os
 import secrets
 import sys
 from dataclasses import dataclass, field
@@ -223,7 +224,7 @@ def report():
 WANTED = [int(a) for a in sys.argv[1:]] or sorted(SCENARIOS)
 
 if __name__ == "__main__":
-    bureau = Bureau(port=8292)
+    bureau = Bureau(port=int(os.environ.get("EDGE_PORT", 8292)))  # another run may hold 8292
     for a in LIVE_AGENTS + [make_user(n) for n in WANTED]:
         bureau.add(a)
     bureau.run()

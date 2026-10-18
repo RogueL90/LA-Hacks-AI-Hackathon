@@ -7,14 +7,32 @@ HEAD_HEIGHT = (0.4, 0.9)    # corners in this band hit a toddler's head when the
 TIP_OVER_MIN_HEIGHT = 0.75  # furniture this tall can fall on a child if it isn't anchored
 
 
+def _count(items: list, noun: str) -> str:
+    return f"{len(items)} {noun}{'s' if len(items) > 1 else ''}"
+
+
+def _names(items: list, rooms: dict[str, str]) -> str:
+    """'dining table (dining room), desk (office) and 2 more'."""
+    labels = [f"{o.label.lower()} ({rooms.get(o.room_id, o.room_id).lower()})" for o in items[:3]]
+    return ", ".join(labels) + (f" and {len(items) - 3} more" if len(items) > 3 else "")
+
+
 def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Overlay]]:
     findings: list[Finding] = []
     overlays: list[Overlay] = [Overlay(type="highlight", data={"zone": "reachable", "max_height_m": REACH_M})]
     rooms = {r.id: r.name for r in space.rooms}
 
-    def add(f: Finding, pin_at: list[float]):
+    def add(f: Finding, pin_at: list[float], each: list | None = None, label: str = ""):
         findings.append(f)
-        pin(overlays, f, pin_at)
+        if not each:
+            pin(overlays, f, pin_at)
+        for o in each or []:  # a grouped finding still marks every object in the 3D view
+            pin(overlays, f.copy(update={"title": label, "object_ids": [o.id]}), o.position)
+
+    # Sharp corners and floor plants share one fix each, so each is one finding for the whole
+    # home rather than one per object.
+    corners: list = []
+    plants: list = []
 
     for o in space.objects:
         floor_h = floor_height(o)
@@ -65,14 +83,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 evidence=evidence_for(o, "Toilet lid within reach"),
             ), o.position)
         elif o.attributes.get("sharp_corners") and HEAD_HEIGHT[0] <= top <= HEAD_HEIGHT[1]:
-            add(Finding(
-                id=f"baby_{o.id}", kind="hazard", severity=3, title=f"Sharp corners on the {o.label.lower()}",
-                object_ids=[o.id],
-                measurements=[Measurement(name="corner_height", value=inches(top), unit="in")],
-                fix_summary="Add soft corner guards",
-                product_query=ProductQuery(query=f"clear corner guards for {o.label.lower()}", quantity=1),
-                evidence=evidence_for(o, "Corner at toddler head height"),
-            ), o.position)
+            corners.append(o)
         elif o.type == "cord" and floor_h < REACH_M:
             add(Finding(
                 id=f"baby_{o.id}", kind="hazard", severity=3, title=f"{o.label.capitalize()} within reach",
@@ -82,12 +93,28 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 evidence=evidence_for(o, "Cord on the floor"),
             ), o.position)
         elif o.type == "plant" and floor_h < REACH_M:
-            add(Finding(
-                id=f"baby_{o.id}", kind="hazard", severity=2, title="Floor plant within reach",
-                object_ids=[o.id],
-                fix_summary="Move it up out of reach; some houseplants are toxic if chewed",
-                evidence=evidence_for(o, "Plant pot on the floor"),
-            ), o.position)
+            plants.append(o)
+
+    if corners:
+        low = min(corners, key=lambda o: floor_height(o) + o.size[1])
+        add(Finding(
+            id="baby_corners", kind="hazard", severity=3,
+            title=f"Sharp corners on {_count(corners, 'piece')} of furniture",
+            object_ids=[o.id for o in corners],
+            measurements=[Measurement(name="lowest_corner", value=inches(floor_height(low) + low.size[1]), unit="in")],
+            fix_summary=f"Add soft corner guards to the {_names(corners, rooms)}",
+            product_query=ProductQuery(query="clear silicone corner guards 8 pack", quantity=-(-len(corners) * 4 // 8)),
+            evidence=evidence_for(corners[0], "Corners at toddler head height"),
+        ), corners[0].position, each=corners, label="Sharp corners")
+    if plants:
+        add(Finding(
+            id="baby_plants", kind="hazard", severity=2,
+            title=f"{_count(plants, 'floor plant')} within reach",
+            object_ids=[o.id for o in plants],
+            fix_summary=f"Move them up out of reach ({', '.join(sorted({rooms.get(o.room_id, o.room_id).lower() for o in plants}))}); "
+                        "some houseplants are toxic if chewed",
+            evidence=evidence_for(plants[0], "Plant pot on the floor"),
+        ), plants[0].position, each=plants, label="Floor plant")
 
     overlays.append(Overlay(type="camera", data={"mode": "first_person", "eye_height_m": 0.75}))
     findings.sort(key=lambda f: -f.severity)

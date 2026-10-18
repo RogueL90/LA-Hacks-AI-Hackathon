@@ -3,7 +3,7 @@
 Values come from the Product Finder (current replacement price) or the user; until then
 each item is listed with value_usd=None rather than an invented number.
 """
-from agents.specialists.geometry import evidence_for
+from agents.specialists.geometry import evidence_for, pin
 from shared.models import Finding, Overlay, ProductQuery, Profile, Space
 
 # Fixtures and building parts belong to the dwelling claim, not contents.
@@ -16,22 +16,37 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
     rooms = {r.id: r.name for r in space.rooms}
     findings: list[Finding] = []
     overlays: list[Overlay] = []
+    listed = []
     for o in space.objects:
         if o.type in NOT_CONTENTS:
             continue
         brand = o.attributes.get("brand_guess") or ""
         guess = o.attributes.get("model_guess") or (f"{brand} {o.label}".strip() if brand.lower() not in o.label.lower() else o.label)
-        findings.append(Finding(
+        f = Finding(
             id=f"claim_{o.id}", kind="item", title=o.label,
             object_ids=[o.id],
             fix_summary=f"{rooms.get(o.room_id, o.room_id)} · priced as: {guess}",
             product_query=ProductQuery(query=f"{guess} replacement price"),
             value_basis="estimate",
             evidence=evidence_for(o, f"Seen in the {rooms.get(o.room_id, o.room_id).lower()}"),
-        ))
+        )
+        findings.append(f)
+        listed.append(o)
+        if o.confidence < CONFIRM_BELOW:  # only items the user should check get their own pin
+            pin(overlays, f.copy(update={"title": f"Confirm: {o.label}"}), o.position, badge="Confirm", severity=3)
         overlays.append(Overlay(type="tag", data={"object_id": o.id, "label": o.label,
                                                   "needs_confirm": o.confidence < CONFIRM_BELOW}))
+    # One pin per room with its item count, on the room's biggest item that needs no checking.
+    by_room: dict[str, list] = {}
+    for o in listed:
+        by_room.setdefault(o.room_id, []).append(o)
+    for room_id, items in by_room.items():
+        anchor = max(items, key=lambda o: (o.confidence >= CONFIRM_BELOW, o.size[0] * o.size[1] * o.size[2]))
+        overlays.append(Overlay(type="pin", data={
+            "finding_id": f"claim_room_{room_id}", "object_id": anchor.id, "position": anchor.position,
+            "severity": 1, "badge": "Room", "title": f"{rooms.get(room_id, room_id).capitalize()} · {len(items)} item{'s' if len(items) > 1 else ''}",
+        }))
     overlays.append(Overlay(type="camera", data={"mode": "flythrough"}))
-    basis = (profile.policy_type or "unknown").replace("_", " ")
-    summary = f"Listed {len(findings)} items across {len(rooms)} rooms for a {basis} claim. Prices come next."
+    basis = f" for a {profile.policy_type.replace('_', ' ')} claim" if profile.policy_type else ""
+    summary = f"Listed {len(findings)} items across {len(rooms)} rooms{basis}. Prices come next."
     return summary, findings, overlays

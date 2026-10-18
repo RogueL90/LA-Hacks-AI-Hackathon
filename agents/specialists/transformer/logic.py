@@ -3,7 +3,7 @@
 Checkpoint A: deterministic measurements plus a fixed item list per goal. Checkpoint B
 replaces the item list with a Claude-generated plan sized to the measured gaps.
 """
-from agents.specialists.geometry import bounds, footprint, inches, is_movable
+from agents.specialists.geometry import bounds, footprint, inches, is_movable, pin
 from shared.models import Finding, Measurement, Overlay, ProductQuery, Profile, Space
 
 WALKWAY_M = 0.9
@@ -102,17 +102,21 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
     needed_types = set().union(*(SATISFIED_BY.get(title, set()) for title, _, _ in wanted))
     for o in in_room:
         if o.type in needed_types:
-            findings.append(Finding(
+            f = Finding(
                 id=f"transform_keep_{o.id}", kind="suggestion", title=f"Keep the {o.label.lower()}",
                 object_ids=[o.id], fix_summary="Already right for the new use",
-            ))
+            )
+            findings.append(f)
+            pin(overlays, f, o.position, badge="Keep", severity=1)
     for o in in_room:
         if o.id not in keep and o.type not in needed_types and is_movable(o):
-            findings.append(Finding(
+            f = Finding(
                 id=f"transform_move_{o.id}", kind="suggestion", title=f"Move the {o.label.lower()} out",
                 object_ids=[o.id],
                 fix_summary=f"Frees {inches(o.size[0])} in of floor for the new layout",
-            ))
+            )
+            findings.append(f)
+            pin(overlays, f, o.position, badge="Move out", severity=3)
             overlays.append(Overlay(type="ghost_object", data={"object_id": o.id, "action": "remove"}))
 
     for i, (title, query, max_w) in enumerate(wanted):

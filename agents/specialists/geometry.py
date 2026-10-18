@@ -12,6 +12,7 @@ LIGHT_TYPES = {"light", "ceiling_light", "lamp_floor", "lamp_table", "night_ligh
 MOVABLE_TYPES = {"chair", "armchair", "stool", "ottoman", "pouf", "clutter", "side_table", "laundry_basket", "box"}
 TIP_OVER_TYPES = {"bookshelf", "dresser", "tv", "tv_stand", "wardrobe"}  # cabinets are usually built in (vanities, kitchen)
 ROOM_KINDS = [
+    ("storage", ("closet", "pantry", "storage", "garage", "attic")),  # first: "bedroom closet" is storage
     ("bathroom", ("bath", "restroom", "toilet", "powder", "wc", "ensuite", "en_suite")),
     ("bedroom", ("bed", "nursery", "primary", "master", "guest")),
     ("hallway", ("hall", "corridor", "landing", "entry", "foyer")),
@@ -81,9 +82,16 @@ def evidence_for(obj: SpaceObject, note: str) -> list[Evidence]:
     return seen or [Evidence(note=note)]
 
 
-def pin(overlays: list[Overlay], f: Finding, position: list[float] | None):
-    """A viewer pin for a finding: the viewer draws it above `object_id` (Aditya's Pin overlay)."""
-    data = {"finding_id": f.id, "severity": f.severity, "title": f.title}
+def pin(overlays: list[Overlay], f: Finding, position: list[float] | None = None,
+        badge: str | None = None, severity: int | None = None):
+    """A viewer pin for a finding: the viewer draws it above `object_id` (Aditya's Pin overlay).
+
+    `badge` ("Keep", "Move out", "Confirm") is for pins that aren't hazards; until the viewer
+    shows it, the pin shows `severity` instead.
+    """
+    data = {"finding_id": f.id, "severity": severity or f.severity, "title": f.title}
+    if badge:
+        data["badge"] = badge
     if f.object_ids:
         data["object_id"] = f.object_ids[0]
     if position:
