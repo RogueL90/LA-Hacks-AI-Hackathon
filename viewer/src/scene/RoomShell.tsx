@@ -1,5 +1,7 @@
 // One room: floor from its polygon + cut-away walls (~70% of ceiling height) with door openings.
+// While walking through the house the walls go full height and the room gets a ceiling.
 import { useMemo } from "react";
+import type { ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Door, Room } from "../lib/types";
 import { meterBox, usePbr, type TextureKey } from "./materials";
@@ -76,11 +78,19 @@ function FloorMaterial({ kind }: { kind: FloorKind }) {
   return <TexturedFloor texture={kind === "tile" ? "tileFloor" : "woodFloor"} />;
 }
 
-function Wall({ length, height, position, rotationY }: { length: number; height: number; position: [number, number, number]; rotationY: number }) {
+interface WallProps {
+  length: number;
+  height: number;
+  position: [number, number, number];
+  rotationY: number;
+  castShadow: boolean;
+}
+
+function Wall({ length, height, position, rotationY, castShadow }: WallProps) {
   const plaster = usePbr("plaster");
   const geometry = useMemo(() => meterBox(length, height, WALL_THICKNESS), [length, height]);
   return (
-    <mesh geometry={geometry} position={position} rotation={[0, rotationY, 0]} castShadow receiveShadow>
+    <mesh geometry={geometry} position={position} rotation={[0, rotationY, 0]} castShadow={castShadow} receiveShadow>
       {/* Plaster relief only: the texture's own grey colour made the walls look dirty. */}
       <meshStandardMaterial
         normalMap={plaster.normalMap}
@@ -92,7 +102,18 @@ function Wall({ length, height, position, rotationY }: { length: number; height:
   );
 }
 
-export function RoomShell({ room, doors }: { room: Room; doors: Door[] }) {
+interface Props {
+  room: Room;
+  doors: Door[];
+  walking?: boolean;
+  /** Click on the floor (not a drag): world x, z of the point. */
+  onFloorClick?: (x: number, z: number) => void;
+}
+
+/** r3f reports how far the pointer moved between down and up; more than this is a drag. */
+const CLICK_MAX_PX = 5;
+
+export function RoomShell({ room, doors, walking = false, onFloorClick }: Props) {
   const points = useMemo(
     () => (room.polygon ?? []).filter((p) => Array.isArray(p) && p.length >= 2) as [number, number][],
     [room.polygon],
@@ -105,7 +126,7 @@ export function RoomShell({ room, doors }: { room: Room; doors: Door[] }) {
   }, [points]);
 
   const walls = useMemo(() => {
-    const height = (room.height_m ?? 2.5) * WALL_CUTAWAY;
+    const height = (room.height_m ?? 2.5) * (walking ? 1 : WALL_CUTAWAY);
     return points.flatMap(([x1, z1], i) => {
       const [x2, z2] = points[(i + 1) % points.length];
       const length = Math.hypot(x2 - x1, z2 - z1);
@@ -127,19 +148,35 @@ export function RoomShell({ room, doors }: { room: Room; doors: Door[] }) {
         };
       });
     });
-  }, [points, room.height_m, doors]);
+  }, [points, room.height_m, doors, walking]);
 
   if (!floorShape) return null;
 
   return (
     <group name={room.id}>
       {/* ShapeGeometry UVs are the shape's coordinates in meters, so tiling is real-world sized. */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        receiveShadow
+        onClick={(e: ThreeEvent<MouseEvent>) => {
+          if (!onFloorClick || e.delta > CLICK_MAX_PX) return;
+          e.stopPropagation();
+          onFloorClick(e.point.x, e.point.z);
+        }}
+      >
         <shapeGeometry args={[floorShape]} />
         <FloorMaterial kind={floorFor(room)} />
       </mesh>
+      {walking && (
+        // Same shape as the floor, seen from below.
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, room.height_m ?? 2.5, 0]}>
+          <shapeGeometry args={[floorShape]} />
+          <meshStandardMaterial color="#fbf9f5" roughness={0.95} side={THREE.BackSide} />
+        </mesh>
+      )}
+      {/* Full-height walls would shade the whole interior from the sun, so they cast no shadow. */}
       {walls.map(({ key, ...w }) => (
-        <Wall key={key} {...w} />
+        <Wall key={key} {...w} castShadow={!walking} />
       ))}
     </group>
   );

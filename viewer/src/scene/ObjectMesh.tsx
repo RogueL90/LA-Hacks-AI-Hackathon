@@ -14,6 +14,7 @@ interface Props {
   selected: boolean;
   night: boolean;
   accent: string;
+  walking?: boolean;
   onSelect: (id: string) => void;
 }
 
@@ -45,7 +46,7 @@ function FallbackBox({ size, color }: { size: [number, number, number]; color: s
   );
 }
 
-export function ObjectMesh({ object, room, selected, night, accent, onSelect }: Props) {
+export function ObjectMesh({ object, room, selected, night, accent, walking = false, onSelect }: Props) {
   const [hovered, setHovered] = useState(false);
   const size = objectSize(object);
   const position = objectPosition(object);
@@ -89,7 +90,8 @@ export function ObjectMesh({ object, room, selected, night, accent, onSelect }: 
         </mesh>
       )}
       {(hovered || selected) && (
-        <Html position={[0, size[1] / 2 + 0.15, 0]} center distanceFactor={8} zIndexRange={[10, 0]}>
+        // Distance-scaled labels suit the dollhouse view; up close in a walk they'd fill the screen.
+        <Html position={[0, size[1] / 2 + 0.15, 0]} center distanceFactor={walking ? undefined : 8} zIndexRange={[10, 0]}>
           <div className="object-label">{object.label}</div>
         </Html>
       )}

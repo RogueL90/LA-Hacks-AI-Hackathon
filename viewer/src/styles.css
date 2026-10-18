@@ -44,3 +44,42 @@ html, body, #root { margin: 0; height: 100%; }
 }
 .pin-label { border: 2px solid; display: flex; align-items: center; gap: 8px; }
 .pin-severity { color: #fff; font-weight: 700; font-size: 13px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; }
+
+/* Walk-through tour */
+.walk-hint {
+  position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); margin: 0;
+  background: rgba(255, 255, 255, 0.9); color: var(--muted); font-size: 14px; font-weight: 500;
+  padding: 8px 14px; border-radius: 999px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08); pointer-events: none;
+}
+.walk-ui {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: calc(100% - 32px);
+}
+.walk-status { display: flex; align-items: center; gap: 8px; }
+.walk-room {
+  background: var(--card); font-weight: 600; font-size: 15px; padding: 8px 14px; border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1); text-transform: capitalize;
+}
+.walk-exit {
+  border: 0; background: var(--text); color: #fff; font: inherit; font-size: 14px; font-weight: 600;
+  padding: 8px 14px; border-radius: 999px; cursor: pointer;
+}
+.walk-pad {
+  display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 56px); gap: 6px;
+  grid-template-areas: ". fwd ." "left back right";
+}
+.walk-btn {
+  border: 0; border-radius: 14px; background: rgba(255, 255, 255, 0.94); color: var(--text);
+  font-size: 20px; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  touch-action: none; user-select: none;
+}
+.walk-btn:active { background: #ece6dc; }
+.walk-btn:focus-visible, .walk-exit:focus-visible, .level:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.walk-forward { grid-area: fwd; }
+.walk-left { grid-area: left; }
+.walk-back { grid-area: back; }
+.walk-right { grid-area: right; }
+.walk-help {
+  margin: 0; font-size: 12px; color: var(--muted); background: rgba(255, 255, 255, 0.85);
+  padding: 4px 10px; border-radius: 999px; text-align: center;
+}

@@ -1,6 +1,6 @@
 // /s/:spaceId?mode=elder&o=ov_123&level=1 — loads a Space (+ overlay set) and renders one floor
 // of the dollhouse (the lowest by default; a switcher appears when there are several).
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Canvas } from "@react-three/fiber";
 import { fetchOverlaySet, fetchSpace } from "../lib/api";
@@ -8,6 +8,40 @@ import { objectSize } from "../lib/defaults";
 import type { OverlaySet, Space } from "../lib/types";
 import { Dollhouse, spaceBounds } from "../scene/Dollhouse";
 import { MODE_PRESETS, THEME, isMode } from "../modes/presets";
+import type { WalkCmd, WalkEntry, WalkInput } from "../scene/WalkControls";
+
+const KEY_CMDS: Record<string, WalkCmd> = {
+  ArrowUp: "forward", w: "forward", W: "forward",
+  ArrowDown: "back", s: "back", S: "back",
+  ArrowLeft: "left", a: "left", A: "left",
+  ArrowRight: "right", d: "right", D: "right",
+};
+
+/** One walk button: a tap takes one step, holding keeps walking. */
+function WalkButton({ cmd, label, glyph, input }: { cmd: WalkCmd; label: string; glyph: string; input: React.MutableRefObject<WalkInput> }) {
+  const release = () => {
+    if (input.current.held === cmd) input.current.held = null;
+  };
+  return (
+    <button
+      className={`walk-btn walk-${cmd}`}
+      aria-label={label}
+      title={label}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        input.current.queue.push(cmd);
+        input.current.held = cmd;
+      }}
+      onPointerUp={release}
+      onPointerCancel={release}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") input.current.queue.push(cmd);
+      }}
+    >
+      {glyph}
+    </button>
+  );
+}
 
 const LEVEL_NAMES: Record<number, string> = { [-1]: "Basement", 0: "Main floor", 1: "Upper floor" };
 const levelName = (level: number) => LEVEL_NAMES[level] ?? `Floor ${level + 1}`;
@@ -41,6 +75,32 @@ export function SpaceView() {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [levelChoice, setLevelChoice] = useState<number | null>(null);
+  const [walk, setWalk] = useState<WalkEntry | null>(null);
+  const [walkRoom, setWalkRoom] = useState<string | null>(null);
+  const walkInput = useRef<WalkInput>({ queue: [], held: null });
+
+  // Arrow keys / WASD walk, Escape leaves the tour.
+  useEffect(() => {
+    if (!walk) return;
+    const down = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return setWalk(null);
+      const cmd = KEY_CMDS[e.key];
+      if (!cmd) return;
+      e.preventDefault();
+      if (!e.repeat) walkInput.current.queue.push(cmd);
+      walkInput.current.held = cmd;
+    };
+    const up = (e: KeyboardEvent) => {
+      if (KEY_CMDS[e.key] === walkInput.current.held) walkInput.current.held = null;
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      walkInput.current = { queue: [], held: null };
+    };
+  }, [walk !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +150,13 @@ export function SpaceView() {
           preset={preset}
           selectedId={selectedId}
           onSelect={setSelectedId}
+          walk={isSnapshot ? null : walk}
+          walkInput={walkInput}
+          onWalk={(entry) => {
+            setWalk(entry);
+            setSelectedId(null);
+          }}
+          onWalkRoom={setWalkRoom}
         />
       </Canvas>
 
@@ -114,6 +181,7 @@ export function SpaceView() {
                   onClick={() => {
                     setLevelChoice(l);
                     setSelectedId(null);
+                    setWalk(null);
                   }}
                 >
                   {levelName(l)}
@@ -122,6 +190,26 @@ export function SpaceView() {
             </nav>
           )}
         </header>
+      )}
+
+      {!isSnapshot && !walk && <p className="walk-hint">Click any floor to walk in</p>}
+
+      {!isSnapshot && walk && (
+        <div className="walk-ui">
+          <div className="walk-status">
+            <span className="walk-room">{walkRoom ?? "Doorway"}</span>
+            <button className="walk-exit" onClick={() => setWalk(null)}>
+              Exit tour
+            </button>
+          </div>
+          <div className="walk-pad" role="group" aria-label="Walk">
+            <WalkButton cmd="forward" label="Step forward" glyph="▲" input={walkInput} />
+            <WalkButton cmd="left" label="Turn left" glyph="◀" input={walkInput} />
+            <WalkButton cmd="back" label="Step back" glyph="▼" input={walkInput} />
+            <WalkButton cmd="right" label="Turn right" glyph="▶" input={walkInput} />
+          </div>
+          <p className="walk-help">Drag to look around · click the floor to jump there · arrow keys work too</p>
+        </div>
       )}
 
       {!isSnapshot && selected && (
