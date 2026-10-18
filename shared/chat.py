@@ -1,7 +1,9 @@
 """Helpers for Agent Chat Protocol messages and ASI:One Interactive Cards."""
 import json
+import os
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from uagents_core.contrib.protocols.chat import (
@@ -38,8 +40,28 @@ def card_message(narration: str, card_kind: str, card_payload: dict, terminal: b
     )
 
 
+MEDIA_TYPES = {
+    ".mov": "video/quicktime", ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".heic": "image/heic",
+}
+_MD_LINK = re.compile(r"!?\[([^\]]*)\]\((https?://[^\s)]+)\)")
+_BARE_URL = re.compile(r"https?://[^\s)\]]+")
+
+
+def _media_type(url: str) -> str:
+    path = urlparse(url).path.lower()
+    mime = MEDIA_TYPES.get(os.path.splitext(path)[1], "")
+    if not mime and "res.cloudinary.com" in url:
+        mime = "video/*" if "/video/upload/" in url else "image/*"
+    return mime
+
+
 def attachments(msg: ChatMessage) -> list[dict]:
-    """Every attached file as {"url", "mime_type", "name"}."""
+    """Every attached video or photo as {"url", "mime_type", "name"}.
+
+    ASI:One sends uploads either as ResourceContent or as a Markdown link in the text
+    (for example when its planner forwards the message), so both are read.
+    """
     found = []
     for item in msg.content:
         if isinstance(item, ResourceContent):
@@ -47,9 +69,19 @@ def attachments(msg: ChatMessage) -> list[dict]:
             for r in resources:
                 found.append({
                     "url": r.uri,
-                    "mime_type": r.metadata.get("mime_type", ""),
+                    "mime_type": r.metadata.get("mime_type", "") or _media_type(r.uri),
                     "name": r.metadata.get("description", ""),
                 })
+    text = msg.text()
+    links = [(name, url) for name, url in _MD_LINK.findall(text)]
+    linked = {url for _, url in links}
+    links += [("", url) for url in _BARE_URL.findall(text) if url not in linked]
+    seen = {f["url"] for f in found}
+    for name, url in links:
+        mime = _media_type(url)
+        if mime and url not in seen:
+            found.append({"url": url, "mime_type": mime, "name": name})
+            seen.add(url)
     return found
 
 

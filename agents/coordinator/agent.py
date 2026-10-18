@@ -95,7 +95,7 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     selection = parse_selection(text)
     action = selection.get("action")
     starting = any(isinstance(c, StartSessionContent) for c in msg.content)
-    ctx.logger.info(f"from={sender[:16]}… text={text[:100]!r} files={len(files)} action={action}")
+    ctx.logger.info(f"from={sender[:16]}… text={text[:200]!r} files={len(files)} action={action}")
 
     state = {} if starting else load(ctx, sender)
     if starting:
