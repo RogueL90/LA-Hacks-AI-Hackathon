@@ -211,7 +211,7 @@ export function SpaceView() {
 
       {!isSnapshot && (
         <header className="topbar">
-          <span className="brand">Last Mile Home</span>
+          <span className="brand">Maestro</span>
           {preset && (
             <span className="mode-chip" style={{ background: preset.accent }}>
               {preset.label}
