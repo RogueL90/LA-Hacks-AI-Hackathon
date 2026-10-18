@@ -1,5 +1,5 @@
 """Baby-proofing checks: everything a toddler can reach (below 0.9 m) and what can tip over."""
-from agents.specialists.geometry import TIP_OVER_TYPES, evidence_for, floor_height, inches, is_covered
+from agents.specialists.geometry import pin, TIP_OVER_TYPES, evidence_for, floor_height, inches, is_covered
 from shared.models import Finding, Measurement, Overlay, ProductQuery, Profile, Space
 
 REACH_M = 0.9               # toddler reach height
@@ -14,7 +14,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
 
     def add(f: Finding, pin_at: list[float]):
         findings.append(f)
-        overlays.append(Overlay(type="pin", data={"finding_id": f.id, "position": pin_at, "severity": f.severity}))
+        pin(overlays, f, pin_at)
 
     for o in space.objects:
         floor_h = floor_height(o)

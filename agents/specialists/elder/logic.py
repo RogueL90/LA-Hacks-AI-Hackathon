@@ -4,6 +4,7 @@ Works on the demo home and on extracted homes: rooms are matched by kind (bedroo
 bathroom, hallway...), and a check whose evidence can't be seen says "seen", not "is".
 """
 from agents.specialists.geometry import (
+    pin,
     LIGHT_TYPES,
     evidence_for,
     footprint,
@@ -33,8 +34,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
 
     def add(f: Finding, pin_at: list[float] | None):
         findings.append(f)
-        if pin_at:
-            overlays.append(Overlay(type="pin", data={"finding_id": f.id, "position": pin_at, "severity": f.severity}))
+        pin(overlays, f, pin_at)
 
     # 1. Doors on the night path narrower than the clear width the person needs.
     for door in space.doors:

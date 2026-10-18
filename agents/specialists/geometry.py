@@ -4,7 +4,7 @@ Spaces come from two sources: the hand-made demo home and Aditya's extractor, wh
 its own room ids ("room_bedroom_2"), object types ("ceiling_light") and attribute names
 ("has_cover"). These helpers let the rules read both.
 """
-from shared.models import Evidence, Room, Space, SpaceObject
+from shared.models import Evidence, Finding, Overlay, Room, Space, SpaceObject
 
 M_TO_IN = 39.37
 
@@ -79,3 +79,16 @@ def evidence_for(obj: SpaceObject, note: str) -> list[Evidence]:
     """The frames the object was seen in (from the extractor), plus our note."""
     seen = [Evidence(frame_url=e.frame_url, timestamp_s=e.timestamp_s, note=note) for e in obj.evidence[:1]]
     return seen or [Evidence(note=note)]
+
+
+def pin(overlays: list[Overlay], f: Finding, position: list[float] | None):
+    """A viewer pin for a finding: the viewer draws it above `object_id` (Aditya's Pin overlay)."""
+    data = {"finding_id": f.id, "severity": f.severity, "title": f.title}
+    if f.object_ids:
+        data["object_id"] = f.object_ids[0]
+    if position:
+        data["position"] = position
+    frame = next((e.frame_url for e in f.evidence if e.frame_url), None)
+    if frame:
+        data["frame_url"] = frame
+    overlays.append(Overlay(type="pin", data=data))
