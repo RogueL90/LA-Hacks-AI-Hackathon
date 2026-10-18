@@ -1,7 +1,7 @@
 ![tag:innovationlab](https://img.shields.io/badge/innovationlab-3D8BD3)
 ![tag:hackathon](https://img.shields.io/badge/hackathon-5F43F1)
 
-# Last Mile Home: Space Transformer
+# Space Transformer
 
 Repurposes a room for a new use, such as turning a spare bedroom into a home office, a nursery or a home gym.
 

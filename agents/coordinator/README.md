@@ -1,7 +1,7 @@
 ![tag:innovationlab](https://img.shields.io/badge/innovationlab-3D8BD3)
 ![tag:hackathon](https://img.shields.io/badge/hackathon-5F43F1)
 
-# Last Mile Home Coordinator
+# Last Mile Home
 
 Upload a 30-second video or a few photos of a home. Last Mile Home turns it into a 3D "dollhouse" model and helps you with four jobs:
 

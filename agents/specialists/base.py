@@ -15,16 +15,16 @@ from shared.space_client import get_space, post_overlays
 Analyze = Callable[[Space, Profile], tuple[str, list[Finding], list[Overlay]]]
 
 
-def make_specialist(key: str, mode: str, description: str, analyze: Analyze, folder: Path) -> Agent:
+def make_specialist(key: str, name: str, mode: str, description: str, analyze: Analyze, folder: Path) -> Agent:
     agent = Agent(
-        name=f"lmh-{key}",
+        name=name,
         seed=config.seed(key),
         mailbox=True,
         publish_agent_details=True,
         readme_path=str(folder / "README.md"),
         description=description,
     )
-    protocol = Protocol(name="lmh-mode", version="0.1.0")
+    protocol = Protocol(name="HomeModeAnalysis", version="0.1.0")
 
     @protocol.on_message(ModeRequest, replies=ModeResult)
     async def handle(ctx: Context, sender: str, req: ModeRequest):

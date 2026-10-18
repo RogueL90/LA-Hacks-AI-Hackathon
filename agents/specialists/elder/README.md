@@ -1,7 +1,7 @@
 ![tag:innovationlab](https://img.shields.io/badge/innovationlab-3D8BD3)
 ![tag:hackathon](https://img.shields.io/badge/hackathon-5F43F1)
 
-# Last Mile Home: Elder Safety
+# Elder Safety Inspector
 
 Finds fall hazards in a 3D model of a home, focused on the walk an older person takes at night from bed to the bathroom.
 

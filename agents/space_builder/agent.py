@@ -14,14 +14,14 @@ from shared.models import SpaceBuildRequest, SpaceBuildResult
 from shared.space_client import SPACE_SERVICE_URL, build_space
 
 agent = Agent(
-    name="lmh-space-builder",
+    name="Home 3D Space Builder",
     seed=config.seed("space_builder"),
     mailbox=True,
     publish_agent_details=True,
     readme_path=str(Path(__file__).with_name("README.md")),
     description="Last Mile Home Space Builder: turns a short home video or photos into a 3D model where every object has a real type, size and position.",
 )
-protocol = Protocol(name="lmh-space", version="0.1.0")
+protocol = Protocol(name="HomeSpaceBuild", version="0.1.0")
 
 
 @protocol.on_message(SpaceBuildRequest, replies=SpaceBuildResult)

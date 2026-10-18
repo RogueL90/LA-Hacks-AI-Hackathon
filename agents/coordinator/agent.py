@@ -60,7 +60,7 @@ GREETING = (
 )
 
 coordinator = Agent(
-    name="lmh-coordinator",
+    name="Last Mile Home",
     seed=config.seed("coordinator"),
     mailbox=True,
     publish_agent_details=True,

@@ -1,7 +1,7 @@
 ![tag:innovationlab](https://img.shields.io/badge/innovationlab-3D8BD3)
 ![tag:hackathon](https://img.shields.io/badge/hackathon-5F43F1)
 
-# Last Mile Home: Insurance Claim
+# Insurance Claim Inventory
 
 Turns a 3D model of a home into a contents inventory for an insurance claim.
 
