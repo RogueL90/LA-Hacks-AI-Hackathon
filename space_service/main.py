@@ -81,15 +81,16 @@ def create_overlays(space_id: str, body: OverlaySetCreate) -> OverlaySetCreated:
     if storage.load_space(space_id) is None:
         raise HTTPException(404, f"space {space_id} not found")
     overlay_set_id = storage.save_overlay_set(
-        space_id, OverlaySet(mode=body.mode, overlays=body.overlays)
+        space_id, OverlaySet(mode=body.mode, overlays=body.overlays), job_id=body.job_id
     )
     return OverlaySetCreated(overlay_set_id=overlay_set_id)
 
 
 @app.get("/spaces/{space_id}/overlays/latest")
-def latest_overlays(space_id: str) -> dict:
-    """The newest overlay set for a space, so an open viewer can follow new checks live."""
-    latest = storage.latest_overlay_set(space_id)
+def latest_overlays(space_id: str, follow: Optional[str] = None) -> dict:
+    """The newest overlay set for a space, so an open viewer can follow new checks live.
+    `follow` (the set the viewer opened with) limits it to checks from the same conversation."""
+    latest = storage.latest_overlay_set(space_id, follow)
     if latest is None:
         raise HTTPException(404, f"no overlays for space {space_id}")
     return latest

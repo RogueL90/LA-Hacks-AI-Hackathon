@@ -14,5 +14,8 @@ export const fetchOverlaySet = (spaceId: string, overlaySetId: string) =>
   getJson<OverlaySet>(`/spaces/${spaceId}/overlays/${overlaySetId}`);
 
 /** The newest overlay set for a space: the viewer follows new checks while it's open. */
-export const fetchLatestOverlay = (spaceId: string) =>
-  getJson<{ overlay_set_id: string; mode: string }>(`/spaces/${spaceId}/overlays/latest`);
+// `follow`: the overlay set the viewer opened with, so it only follows that conversation's checks.
+export const fetchLatestOverlay = (spaceId: string, follow?: string | null) =>
+  getJson<{ overlay_set_id: string; mode: string }>(
+    `/spaces/${spaceId}/overlays/latest${follow ? `?follow=${encodeURIComponent(follow)}` : ""}`,
+  );
