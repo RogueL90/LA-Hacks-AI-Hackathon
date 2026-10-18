@@ -32,20 +32,36 @@ def load_space(space_id: str) -> Optional[Space]:
     return Space.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def save_overlay_set(space_id: str, overlay_set: OverlaySet) -> str:
+def save_overlay_set(space_id: str, overlay_set: OverlaySet, job_id: str = "") -> str:
     overlay_set_id = f"ov_{uuid.uuid4().hex[:10]}"
-    payload = {"space_id": space_id, **overlay_set.model_dump()}
+    payload = {"space_id": space_id, "job_id": job_id, **overlay_set.model_dump()}
     _write_json(OVERLAYS_DIR / f"{overlay_set_id}.json", payload)
     return overlay_set_id
 
 
-def latest_overlay_set(space_id: str) -> Optional[dict]:
-    """{"overlay_set_id", "mode"} of the newest overlay set saved for a space (the viewer's live mode)."""
+def latest_overlay_set(space_id: str, follow: Optional[str] = None) -> Optional[dict]:
+    """{"overlay_set_id", "mode"} of the newest overlay set saved for a space (the viewer's live mode).
+
+    With `follow` (the overlay set a viewer opened with), only sets from the same job count: cached
+    builds give everyone who sends the same video the same space, and one conversation's viewer
+    must not switch to another conversation's checks. A set without a job never switches.
+    """
     if not OVERLAYS_DIR.exists():
         return None
+    job = None
+    if follow:
+        start = OVERLAYS_DIR / f"{follow}.json"
+        if not start.exists():
+            return None
+        first = json.loads(start.read_text(encoding="utf-8"))
+        if first.get("space_id") != space_id:
+            return None
+        job = first.get("job_id") or ""
+        if not job:
+            return {"overlay_set_id": follow, "mode": first.get("mode")}
     for path in sorted(OVERLAYS_DIR.glob("ov_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("space_id") == space_id:
+        if payload.get("space_id") == space_id and (job is None or payload.get("job_id") == job):
             return {"overlay_set_id": path.stem, "mode": payload.get("mode")}
     return None
 

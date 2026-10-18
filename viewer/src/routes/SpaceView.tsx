@@ -126,7 +126,7 @@ export function SpaceView() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const latest = await fetchLatestOverlay(spaceId);
+        const latest = await fetchLatestOverlay(spaceId, overlaySetId);
         if (cancelled || latest.overlay_set_id === shownOverlayId.current) return;
         const overlaySet = await fetchOverlaySet(spaceId, latest.overlay_set_id);
         if (cancelled) return;
@@ -144,7 +144,7 @@ export function SpaceView() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [live, spaceId]);
+  }, [live, spaceId, overlaySetId]);
 
   const levels = useMemo(
     () => (state.status === "ready" ? [...new Set(state.space.rooms.map((r) => r.level ?? 0))].sort((a, b) => a - b) : []),
