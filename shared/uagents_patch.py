@@ -20,7 +20,15 @@ from uagents.communication import Dispenser
 from uagents_core.types import DeliveryStatus, MsgStatus
 
 MAX_IN_FLIGHT = 64
-SEND_TIMEOUT_S = 20
+# Live, Agentverse sometimes takes 13-25 s to accept a message; a 20 s cap cut those sends off
+# while the message still arrived. 40 s lets slow deliveries finish and still frees a dead endpoint.
+SEND_TIMEOUT_S = 40
+TIMEOUT_DETAIL = f"No answer in {SEND_TIMEOUT_S} s"
+
+
+def timed_out(detail: str) -> bool:
+    """A send stopped at the cap: the receiver may still have the message, so resending could duplicate it."""
+    return (detail or "").startswith("No answer in")
 
 
 async def _run(self: Dispenser) -> None:
@@ -38,7 +46,7 @@ async def _run(self: Dispenser) -> None:
                 except asyncio.TimeoutError:
                     if not future.done():  # report it like any failed delivery, not as an exception
                         future.set_result(MsgStatus(
-                            status=DeliveryStatus.FAILED, detail=f"No answer in {SEND_TIMEOUT_S} s",
+                            status=DeliveryStatus.FAILED, detail=TIMEOUT_DETAIL,
                             destination=env.target, endpoint=endpoints[0] if endpoints else "", session=env.session))
 
     tasks: set[asyncio.Task] = set()

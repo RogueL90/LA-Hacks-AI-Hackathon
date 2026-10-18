@@ -67,7 +67,7 @@ from shared.models import (
     VerifyPaymentRequest,
     VerifyPaymentResult,
 )
-from shared import stripe_pay
+from shared import stripe_pay, uagents_patch
 from shared.payments import FLAT_SERVICE_FEE_USD, format_service_fee_usd
 from shared.space_client import get_space
 
@@ -116,17 +116,41 @@ def save(ctx: Context, sender: str, state: dict):
 FLAG_UPLOADS: dict = {}  # session -> the next reply should also say "this agent accepts uploads"
 
 
-async def send(ctx: Context, to: str, msg: ChatMessage):
-    if FLAG_UPLOADS.pop(ctx.session, False):
+SEND_ATTEMPTS = 3
+RETRY_WITHIN_S = 45  # ASI:One's planner stops waiting for a reply after about 60 s
+
+
+async def send(ctx: Context, to: str, msg):
+    """Send a reply (chat message or payment message), retrying a failed delivery.
+
+    Live: while Agentverse was slow, an address lookup failed and raised, and a send hit the time cap.
+    A failure that never left (a lookup error, a refused or failed request) is sent again, the same
+    message with the same msg_id. A send stopped at the time cap is not: that results card still
+    arrived, and resending would have shown it twice.
+    """
+    if isinstance(msg, ChatMessage) and FLAG_UPLOADS.pop(ctx.session, False):
         msg = ChatMessage(timestamp=msg.timestamp, msg_id=msg.msg_id,
                           content=[*msg.content, MetadataContent(type="metadata", metadata={"attachments": "true"})])
     t0 = time.monotonic()
-    status = await ctx.send(to, msg)
-    took = time.monotonic() - t0
-    if status.status.value == "failed":
-        ctx.logger.warning(f"reply to {to[:16]}… failed after {took:.1f} s: {status.detail}")
-    elif took > 3:
-        ctx.logger.warning(f"reply to {to[:16]}… took {took:.1f} s to deliver")
+    for attempt in range(1, SEND_ATTEMPTS + 1):
+        try:
+            status = await ctx.send(to, msg)
+            failed, detail = status.status.value == "failed", status.detail
+        except Exception as exc:  # e.g. the Almanac lookup timed out and the fallback resolver raised
+            failed, detail = True, f"{type(exc).__name__}: {exc}"
+        took = time.monotonic() - t0
+        if not failed:
+            if attempt > 1:
+                ctx.logger.warning(f"reply to {to[:16]}… delivered on attempt {attempt} after {took:.1f} s")
+            elif took > 3:
+                ctx.logger.warning(f"reply to {to[:16]}… took {took:.1f} s to deliver")
+            return
+        last = attempt == SEND_ATTEMPTS or took > RETRY_WITHIN_S or uagents_patch.timed_out(detail)
+        ctx.logger.warning(f"reply to {to[:16]}… failed (attempt {attempt}) after {took:.1f} s: {detail}"
+                           + ("; not resending" if last else "; retrying"))
+        if last:
+            return
+        await asyncio.sleep(1)
 
 
 @chat.on_message(ChatMessage)
@@ -753,7 +777,7 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         return
     t_stripe = time.monotonic() - t0
     # Send RequestPayment before anything slow (or any LLM call) so ASI:One renders the payment card.
-    await ctx.send(sender, RequestPayment(
+    await send(ctx, sender, RequestPayment(
         accepted_funds=[Funds(currency="USD", amount=total, payment_method="stripe")],
         recipient=str(coordinator.address),
         deadline_seconds=1800,
@@ -1047,19 +1071,19 @@ async def on_commit(ctx: Context, sender: str, msg: CommitPayment):
         await settle_commit(ctx, sender, state, msg)
     except Exception:
         ctx.logger.exception("PAYMENT commit handling failed")
-        await ctx.send(sender, CancelPayment(transaction_id=msg.transaction_id, reason="We couldn't verify this payment."))
+        await send(ctx, sender, CancelPayment(transaction_id=msg.transaction_id, reason="We couldn't verify this payment."))
     save(ctx, sender, state)
 
 
 async def settle_commit(ctx: Context, sender: str, state: dict, msg: CommitPayment):
     if msg.funds.payment_method != "stripe" or not msg.transaction_id:
-        await ctx.send(sender, CancelPayment(transaction_id=msg.transaction_id, reason="Only card payments via Stripe are accepted."))
+        await send(ctx, sender, CancelPayment(transaction_id=msg.transaction_id, reason="Only card payments via Stripe are accepted."))
         return
     if not await verify_paid(ctx, state, msg.transaction_id):
-        await ctx.send(sender, CancelPayment(
+        await send(ctx, sender, CancelPayment(
             transaction_id=msg.transaction_id, reason="Stripe checkout isn't complete yet. Finish it, then pay again."))
         return
-    await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
+    await send(ctx, sender, CompletePayment(transaction_id=msg.transaction_id))
     await after_payment(ctx, sender, state, msg.transaction_id)
 
 

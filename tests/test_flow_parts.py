@@ -333,3 +333,43 @@ def test_a_child_age_on_elder_results_runs_the_baby_check():
         assert runs == ["baby", "shown again"]
     finally:
         coord.on_intake, coord.show_results = orig, orig_results
+
+
+def test_a_reply_that_fails_to_deliver_is_sent_again(monkeypatch):
+    """Live, while Agentverse was slow: an address lookup raised, and a send hit the time cap but arrived."""
+    from shared import uagents_patch
+    from uagents_core.types import DeliveryStatus, MsgStatus
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(coord.asyncio, "sleep", lambda s: real_sleep(0))
+
+    class FlakyCtx(FakeCtx):
+        def __init__(self, *failures):
+            super().__init__()
+            self.failures = list(failures)
+
+        async def send(self, to, msg):
+            self.sent.append((to, msg))
+            if self.failures:
+                failure = self.failures.pop(0)
+                if isinstance(failure, Exception):
+                    raise failure
+                return MsgStatus(status=DeliveryStatus.FAILED, detail=failure, destination=to, endpoint="",
+                                 session=None)
+            return MsgStatus(status=DeliveryStatus.DELIVERED, detail="ok", destination=to, endpoint="", session=None)
+
+    # A lookup error, then a failed request: neither left, so the same message goes again.
+    ctx = FlakyCtx(ValueError("Almanac contract not found for testnet."), "Message delivery failed")
+    run(coord.send(ctx, USER, coord.text_message("Found 7 hazards.")))
+    assert len(ctx.sent) == 3 and len({m.msg_id for _, m in ctx.sent}) == 1
+    assert any("delivered on attempt 3" in l for l in ctx.logger.lines)
+
+    # Stopped at the time cap: it may have arrived (it did, live), so it isn't sent twice.
+    ctx = FlakyCtx(uagents_patch.TIMEOUT_DETAIL)
+    run(coord.send(ctx, USER, coord.text_message("Found 7 hazards.")))
+    assert len(ctx.sent) == 1 and any("not resending" in l for l in ctx.logger.lines)
+
+    # Never more than SEND_ATTEMPTS tries.
+    ctx = FlakyCtx(*["Message delivery failed"] * 5)
+    run(coord.send(ctx, USER, coord.text_message("Found 7 hazards.")))
+    assert len(ctx.sent) == coord.SEND_ATTEMPTS
