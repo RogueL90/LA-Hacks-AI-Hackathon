@@ -1,4 +1,6 @@
 """Specialist plans: the Space Transformer's shopping list and budget, and the noise rules."""
+import pytest
+
 from agents.specialists.baby.logic import analyze as baby
 from agents.specialists.elder.logic import analyze as elder
 from agents.specialists.transformer.logic import analyze as transformer, requested_items
@@ -180,3 +182,23 @@ def test_no_free_wall_means_no_zero_inch_desk():
         tl._free_walls = orig
     desk = items(f)["Add: Desk"]
     assert "under 0 in" not in desk.query and not desk.constraints
+
+
+@pytest.mark.parametrize("months, words", [(2, "isn't moving yet"), (9, "crawler's reach"), (18, "toddler's reach")])
+def test_baby_summary_fits_the_age(months, words):
+    summary, _, _ = baby(demo_space(), Profile(mode="baby", child_age_months=months))
+    assert words in summary
+
+
+def test_the_bed_never_blocks_its_own_path_and_whole_inches_decide_seat_height():
+    s = demo_space()
+    data = s.model_dump()
+    for o in data["objects"]:
+        if o["type"] == "bed":
+            o["attributes"]["is_movable"] = True  # how the new extractor marks beds
+        if o["type"] == "toilet":
+            o["attributes"]["seat_height_m"] = 0.4318 - 0.0005  # a hair under 17 in
+    summary, f, _ = elder(Space(**data), Profile(mode="elder", mobility_aid="wheelchair", night_trips=False))
+    assert not [x for x in f if x.title.lower().startswith("bed") and "blocks" in x.title]
+    assert not [x for x in f if "Low toilet seat" in x.title]
+    assert "night path" not in summary

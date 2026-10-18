@@ -131,6 +131,16 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
     split_budget(findings, profile.budget_usd)
     overlays.append(Overlay(type="camera", data={"mode": "first_person", "eye_height_m": 0.75}))
     findings.sort(key=lambda f: -f.severity)
-    age = f" for a {profile.child_age_months}-month-old" if profile.child_age_months else ""
-    summary = f"Found {len(findings)} hazards within a toddler's reach{age}." if findings else "Nothing hazardous within reach."
+    months = profile.child_age_months
+    n = f"{len(findings)} hazard{'s' if len(findings) != 1 else ''}"
+    if not findings:
+        summary = "Nothing hazardous within reach."
+    elif months is not None and months < 6:
+        summary = (f"Your {months}-month-old isn't moving yet: these {n} matter once crawling starts "
+                   "(around 6 to 10 months), so there's time to fix them in order.")
+    elif months is not None and months < 12:
+        summary = f"Found {n} within a crawler's reach for a {months}-month-old."
+    else:
+        age = f" for a {months}-month-old" if months else ""
+        summary = f"Found {n} within a toddler's reach{age}."
     return summary, findings, overlays

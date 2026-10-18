@@ -80,8 +80,8 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
         wall_x = max(p[0] for p in room.polygon)
         _, _, bed_z0, bed_z1 = footprint(bed)
         for o in space.objects:
-            if o.room_id != bed.room_id or not is_movable(o) or o.type == "clutter":
-                continue
+            if o.room_id != bed.room_id or not is_movable(o) or o.type in ("clutter", "bed") or o.id == bed.id:
+                continue  # the bed itself (the extractor marks beds movable) and clutter aren't "in the way"
             _, _, oz0, oz1 = footprint(o)
             if oz1 < bed_z0 or oz0 > bed_z1:  # not beside the bed, so not on the bedside path
                 continue
@@ -170,7 +170,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
     for o in space.objects:
         if o.type == "toilet":
             seat = o.attributes.get("seat_height_m")
-            if seat is not None and seat < COMFORT_TOILET_HEIGHT:
+            if seat is not None and inches(seat) < inches(COMFORT_TOILET_HEIGHT):  # whole inches: no "17 in, needs 17 in"
                 shape = o.attributes.get("toilet_shape", "round")
                 add(Finding(
                     id=f"elder_{o.id}", kind="hazard", severity=3,
@@ -223,6 +223,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
     split_budget(findings, profile.budget_usd)
     findings.sort(key=lambda f: -f.severity)
     worst = sum(1 for f in findings if f.severity >= 4)
-    summary = (f"Found {len(findings)} fall hazards, {worst} of them serious, on the night path from bed to bathroom."
-               if findings else "No fall hazards found on the night path.")
+    where = " on the night path from bed to bathroom" if profile.night_trips else ""
+    summary = (f"Found {len(findings)} fall hazard{'s' if len(findings) != 1 else ''}, {worst} of them serious{where}."
+               if findings else "No fall hazards found.")
     return summary, findings, overlays
