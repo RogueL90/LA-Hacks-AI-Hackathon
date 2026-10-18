@@ -5,6 +5,7 @@ bathroom, hallway...), and a check whose evidence can't be seen says "seen", not
 """
 from agents.specialists.geometry import (
     pin,
+    split_budget,
     LIGHT_TYPES,
     evidence_for,
     floor_height,
@@ -50,6 +51,8 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
     # 1. Doors on the night path narrower than the person's mobility aid needs (one finding per room).
     narrow: dict[str, list] = {}
     for door in space.doors:
+        if door.kind == "open":
+            continue  # an open-plan side, not an opening someone squeezes through
         if kinds.get(door.room_id) in NIGHT_PATH and door.width_m < door_need:
             narrow.setdefault(door.room_id, []).append(door)
     for room_id, doors in narrow.items():
@@ -57,7 +60,9 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
         tightest = min(doors, key=lambda d: d.width_m)
         add(Finding(
             id=f"elder_{tightest.id}", kind="hazard", severity=4,
-            title=f"{len(doors)} narrow {room} doors" if len(doors) > 1 else f"Narrow {room} door",
+            title=(f"{len(doors)} narrow {room} doorways" if len(doors) > 1 else f"Narrow {room} doorway")
+                  if all(d.kind == "doorway" for d in doors) else
+                  (f"{len(doors)} narrow {room} doors" if len(doors) > 1 else f"Narrow {room} door"),
             measurements=[Measurement(name="door_width", value=inches(tightest.width_m), unit="in",
                                       required=inches(door_need), passes=False)],
             fix_summary="Swap to offset (swing-clear) hinges, which add up to 2 in of clear width",
@@ -115,14 +120,20 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 product_query=ProductQuery(query="floor cord cover raceway 6 ft"),
                 evidence=evidence_for(o, "Cord crosses a walking path"),
             ), o.position)
-        elif o.type == "stairs" and not o.attributes.get("handrail_both_sides"):
-            add(Finding(
-                id=f"elder_{o.id}", kind="hazard", severity=5, title="Stairs without confirmed handrails",
-                object_ids=[o.id],
-                fix_summary="Fit sturdy handrails on both sides and light the top and bottom (CDC STEADI)",
-                product_query=ProductQuery(query="stair handrail kit wall mounted"),
-                evidence=evidence_for(o, "Handrails on both sides not seen in the video"),
-            ), o.position)
+
+    # 3a. Stairs without handrails on both sides: one finding even when the stairs come as several
+    # objects (a flight per floor), one handrail kit per side.
+    stairs = [o for o in space.objects if o.type == "stairs" and not o.attributes.get("handrail_both_sides")]
+    if stairs:
+        add(Finding(
+            id=f"elder_{stairs[0].id}", kind="hazard", severity=5, title="Stairs without confirmed handrails",
+            object_ids=[o.id for o in stairs],
+            fix_summary="Fit sturdy handrails on both sides and light the top and bottom (CDC STEADI)",
+            product_query=ProductQuery(
+                query=f"stair handrail kit {max(4, round(max(max(o.size[0], o.size[2]) for o in stairs) * 3.28))} ft wall mounted",
+                quantity=2),
+            evidence=evidence_for(stairs[0], "Handrails on both sides not seen in the video"),
+        ), stairs[0].position, each=stairs if len(stairs) > 1 else None, label="Stairs without confirmed handrails")
 
     # 3b. Clutter on the floor: one finding per room, worst rooms (night path) first.
     piles: dict[str, list] = {}
@@ -140,7 +151,8 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
             evidence=evidence_for(items[0], f"{items[0].label.capitalize()} on the floor"),
         ), items[0].position, each=items, label="Clutter")
 
-    # 4. Lighting for night trips: no night light seen on the bedroom-to-bathroom path.
+    # 4. Lighting for night trips: no night light seen on the bedroom-to-bathroom path (a light per room on it).
+    night_pack = next(n for n in (2, 3, 4, 6) if n >= sum(1 for k in kinds.values() if k in NIGHT_PATH) or n == 6)
     if profile.night_trips is not False and any(k in ("bedroom", "bathroom") for k in kinds.values()):
         path_lights = [o for o in space.objects if o.type in LIGHT_TYPES and kinds.get(o.room_id) in NIGHT_PATH]
         if not any(o.attributes.get("night_light") for o in path_lights):
@@ -149,7 +161,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 title="No night lighting between bedroom and bathroom",
                 object_ids=[o.id for o in path_lights],
                 fix_summary="Add plug-in motion-sensor night lights along the path (CDC STEADI)",
-                product_query=ProductQuery(query="plug-in motion sensor LED night light 3 pack"),
+                product_query=ProductQuery(query=f"plug-in motion sensor LED night light {night_pack} pack"),
                 evidence=evidence_for(path_lights[0], "No night light seen on the path") if path_lights
                 else [Evidence(note="No night light seen on the path")],
             ), path_lights[0].position if path_lights else None)
@@ -178,7 +190,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                     title=f"No grab bar beside the {names.get(o.room_id, 'bathroom').lower()} toilet",
                     object_ids=[o.id],
                     fix_summary="Install a grab bar next to the toilet (CDC STEADI)",
-                    product_query=ProductQuery(query="stainless steel grab bar 18 in"),
+                    product_query=ProductQuery(query="toilet grab bar 18 in stainless steel"),
                     evidence=evidence_for(o, "No grab bar seen beside the toilet"),
                 ), o.position)
         if o.type in ("bathtub", "shower") and not o.attributes.get("grab_bar"):
@@ -186,7 +198,9 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 id=f"elder_{o.id}", kind="hazard", severity=4, title=f"No grab bar at the {o.type}",
                 object_ids=[o.id],
                 fix_summary=f"Install grab bars inside and next to the {o.type} (CDC STEADI)",
-                product_query=ProductQuery(query="stainless steel grab bar 18 in", quantity=2),
+                product_query=ProductQuery(
+                    query="bathtub grab bar 24 in stainless steel" if o.type == "bathtub" else "shower grab bar 16 in stainless steel",
+                    quantity=2),
                 evidence=evidence_for(o, f"No grab bar seen at the {o.type}"),
             ), o.position)
 
@@ -206,6 +220,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
         overlays.append(Overlay(type="path", data=path))
         overlays.append(Overlay(type="camera", data={"mode": "first_person", "eye_height_m": 1.55, "follow_path": True}))
 
+    split_budget(findings, profile.budget_usd)
     findings.sort(key=lambda f: -f.severity)
     worst = sum(1 for f in findings if f.severity >= 4)
     summary = (f"Found {len(findings)} fall hazards, {worst} of them serious, on the night path from bed to bathroom."

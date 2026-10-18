@@ -113,7 +113,7 @@ def test_paid_pay_link_is_found_and_confirmed_once(verifier_agent, fake_stripe):
     assert state["payment"]["status"] == "paid"
     assert ctx.last_card_title() == "Payment received"
     assert verifier_agent.calls == ["cs_test_hosted_1"]  # one request, for the paid checkout
-    assert "https://store.example/grab-bar" in str(ctx.cards()[-1])  # the receipt has the store link
+    assert any("[Grab bar](https://store.example/grab-bar)" in t for t in ctx.texts())  # a clickable store link
 
 
 def test_nothing_paid_means_no_receipt_and_no_verifier_call(verifier_agent, fake_stripe):

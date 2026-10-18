@@ -127,9 +127,9 @@ def _severity_badge(f: Finding) -> dict:
 
 
 def _view_button(view_url: str | None) -> list[dict]:
-    """Open the 3D model with every finding pinned (the card is what ASI:One shows; its text may be rewritten)."""
-    return [{"type": "button", "label": "View in 3D", "action": {"selection": {"action": "link_opened"}, "redirect": view_url}}] \
-        if view_url else []
+    """No link buttons: ASI:One card buttons only submit a selection (a "redirect" is ignored) and the
+    first click locks the card, so the 3D link goes in the message text, where links are clickable."""
+    return []
 
 
 def _buttons(fee_label: str | None, approve: str = "Find products", view_url: str | None = None) -> dict:
@@ -303,18 +303,24 @@ def _quote_row(q: ProductQuote, link: bool) -> dict:
         {"type": "heading", "value": q.title, "level": 3},
         {"type": "text", "value": f"{price} · {q.merchant}", "style": "emphasis"},
     ]
-    if q.fit_note:
-        children.append({"type": "text", "value": q.fit_note.split(". ", 1)[-1], "style": "muted"})
+    note = (q.fit_note or "").split(". ", 1)[-1]
+    if note and "no size constraints" not in note:
+        children.append({"type": "text", "value": note, "style": "muted"})
     if (q.specs or {}).get("role") == "backup":
         children.append({"type": "badge", "label": "Backup pick", "variant": "info"})
-    if link:
-        children.append({"type": "button", "label": f"Open at {q.merchant}",
-                         "action": {"selection": {"action": "link_opened"}, "redirect": q.url}})
     return {"children": children}
 
 
-def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_url: str) -> dict:
+def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_url: str, notes: dict | None = None) -> dict:
     """The products found for the chosen fixes, then the service fee (store links come after paying)."""
+    notes = notes or {}
+    extra = []
+    if notes.get("left_out"):
+        extra.append({"type": "text", "style": "muted",
+                      "value": "Left out to stay within budget: " + "; ".join(notes["left_out"]).lower()})
+    if notes.get("not_found"):
+        extra.append({"type": "text", "style": "muted",
+                      "value": "No product page confirmed for: " + "; ".join(notes["not_found"]).lower()})
     if budget is None:
         budget_badge = {"type": "badge", "label": "No budget set", "variant": "info"}
     elif cart.within_budget:
@@ -329,16 +335,14 @@ def cart_card(cart: CartResult, budget: float | None, fee_label: str, checkout_u
             {"type": "group", "direction": "row", "gap": 6, "children": [
                 budget_badge, {"type": "badge", "label": "Store pages checked", "variant": "success"}]},
             {"type": "list", "items": [_quote_row(q, link=False) for q in cart.items[:10]]},
+            *extra,
             {"type": "divider"},
             {"type": "text", "value": f"Pay the {fee_label} service fee to get the store link for every item. "
                                       "You buy on each store's site: this is a handoff, not an order."},
-            {"type": "text", "value": "Stripe test mode · test card 4242 4242 4242 4242 · any future date · any CVC",
+            {"type": "text", "value": "Pay with the secure Stripe link in the message above (test mode · card "
+                                      "4242 4242 4242 4242 · any future date · any CVC), then tap I've paid.",
              "style": "muted"},
-            {"type": "group", "direction": "row", "gap": 8, "children": [
-                {"type": "button", "label": f"Pay {fee_label} securely", "primary": True,
-                 "action": {"selection": {"action": "payment_opened"}, "redirect": checkout_url}},
-                {"type": "button", "label": "I've paid", "action": {"selection": {"action": "check_payment"}}},
-            ]},
+            {"type": "button", "label": "I've paid", "primary": True, "action": {"selection": {"action": "check_payment"}}},
         ],
     }}
 
@@ -354,12 +358,9 @@ def payment_card(fee_label: str, checkout_url: str) -> dict:
                 {"type": "badge", "label": "Secure Stripe checkout", "variant": "success"},
                 {"type": "badge", "label": "Test mode", "variant": "info"},
             ]},
-            {"type": "text", "value": "Test card 4242 4242 4242 4242 · any future date · any CVC", "style": "muted"},
-            {"type": "group", "direction": "row", "gap": 8, "children": [
-                {"type": "button", "label": f"Pay {fee_label.split(' ')[0]} securely", "primary": True,
-                 "action": {"selection": {"action": "payment_opened"}, "redirect": checkout_url}},
-                {"type": "button", "label": "I've paid", "action": {"selection": {"action": "check_payment"}}},
-            ]},
+            {"type": "text", "value": "Pay with the Stripe link in the message above (test card 4242 4242 4242 4242 · "
+                                      "any future date · any CVC), then tap I've paid.", "style": "muted"},
+            {"type": "button", "label": "I've paid", "primary": True, "action": {"selection": {"action": "check_payment"}}},
         ],
     }}
 
@@ -376,7 +377,7 @@ def receipt_card(amount: str, reference: str, cart: CartResult | None = None) ->
         children += [
             {"type": "heading", "value": "Your store links", "level": 3},
             {"type": "list", "items": [_quote_row(q, link=True) for q in items[:10]]},
-            {"type": "text", "value": "These links open each store's product page. Nothing has been ordered for you.",
+            {"type": "text", "value": "The store links are in the message above. Nothing has been ordered for you.",
              "style": "muted"},
         ]
     children.append({"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}})
@@ -410,10 +411,8 @@ def claim_package_card(pkg: ClaimPackage, priced: list[Finding], unpriced: int, 
         {"type": "text", "value": "Ready to send to your insurer. Nothing has been filed for you.", "style": "muted"},
     ]
     if downloads:
-        children.append({"type": "group", "direction": "row", "gap": 8, "children": [
-            {"type": "button", "label": label, "primary": i == 0,
-             "action": {"selection": {"action": "link_opened"}, "redirect": url}}
-            for i, (label, url) in enumerate(downloads)]})
+        children.append({"type": "text", "value": "Download links (Excel, CSV, cover letter) are in the message above.",
+                         "style": "muted"})
     children.append({"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}})
     return {"root": {
         "type": "section",

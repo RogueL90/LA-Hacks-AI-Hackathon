@@ -50,6 +50,7 @@ async def post_overlays(space_id: str, mode: str, overlays: list[Overlay], job_i
         overlay_set_id = r.json()["overlay_set_id"]
     return {
         "overlay_set_id": overlay_set_id,
-        "viewer_url": f"{VIEWER_BASE_URL}/s/{space_id}?mode={service_mode}&o={overlay_set_id}" if VIEWER_BASE_URL else None,
+        "viewer_url": (f"{VIEWER_BASE_URL}/s/{space_id}?mode={service_mode}&o={overlay_set_id}&live=1"  # follows newer checks
+                       if VIEWER_BASE_URL else None),
         "snapshot_url": f"{SPACE_SERVICE_URL}/spaces/{space_id}/snapshot.png?mode={service_mode}&o={overlay_set_id}&view=hero",
     }

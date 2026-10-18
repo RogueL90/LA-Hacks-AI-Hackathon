@@ -1,5 +1,5 @@
 """Baby-proofing checks: everything a toddler can reach (below 0.9 m) and what can tip over."""
-from agents.specialists.geometry import pin, TIP_OVER_TYPES, evidence_for, floor_height, inches, is_covered
+from agents.specialists.geometry import pin, split_budget, TIP_OVER_TYPES, evidence_for, floor_height, inches, is_covered
 from shared.models import Finding, Measurement, Overlay, ProductQuery, Profile, Space
 
 REACH_M = 0.9               # toddler reach height
@@ -33,20 +33,15 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
     # home rather than one per object.
     corners: list = []
     plants: list = []
+    outlets: list = []
+    stairs: list = []
 
     for o in space.objects:
         floor_h = floor_height(o)
         top = floor_h + o.size[1]
         where = rooms.get(o.room_id, o.room_id).lower()
         if o.type == "outlet" and not is_covered(o) and floor_h < REACH_M:
-            add(Finding(
-                id=f"baby_{o.id}", kind="hazard", severity=4, title=f"Uncovered outlet in the {where}",
-                object_ids=[o.id],
-                measurements=[Measurement(name="height_from_floor", value=inches(floor_h), unit="in")],
-                fix_summary="Fit sliding outlet covers or plug covers",
-                product_query=ProductQuery(query="sliding outlet covers child safety", quantity=2),
-                evidence=evidence_for(o, "Outlet within a toddler's reach"),
-            ), o.position)
+            outlets.append(o)
         elif (o.type in TIP_OVER_TYPES and o.attributes.get("anchored") is not True
               and floor_h < 0.2 and top >= TIP_OVER_MIN_HEIGHT):  # floor-standing only; wall cabinets can't tip
             add(Finding(
@@ -59,13 +54,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
                 evidence=evidence_for(o, "No wall anchor seen"),
             ), o.position)
         elif o.type == "stairs":
-            add(Finding(
-                id=f"baby_{o.id}", kind="hazard", severity=5, title="Stairs without a safety gate",
-                object_ids=[o.id],
-                fix_summary="Fit hardware-mounted gates at the top and bottom of the stairs",
-                product_query=ProductQuery(query="hardware mounted baby gate for top of stairs", quantity=2),
-                evidence=evidence_for(o, "No gate seen at the stairs"),
-            ), o.position)
+            stairs.append(o)
         elif o.type == "stove":
             add(Finding(
                 id=f"baby_{o.id}", kind="hazard", severity=4, title="Stove knobs within reach",
@@ -95,6 +84,29 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
         elif o.type == "plant" and floor_h < REACH_M:
             plants.append(o)
 
+    if stairs:
+        # One finding even when the stairs come as a flight per floor: a gate at the top and the bottom,
+        # sized to the measured stair width.
+        width = inches(max(min(o.size[0], o.size[2]) for o in stairs))
+        add(Finding(
+            id=f"baby_{stairs[0].id}", kind="hazard", severity=5, title="Stairs without a safety gate",
+            object_ids=[o.id for o in stairs],
+            measurements=[Measurement(name="stair_width", value=width, unit="in")],
+            fix_summary="Fit hardware-mounted gates at the top and bottom of the stairs",
+            product_query=ProductQuery(query=f"hardware mounted baby gate for stairs fits {width} in opening", quantity=2),
+            evidence=evidence_for(stairs[0], "No gate seen at the stairs"),
+        ), stairs[0].position, each=stairs if len(stairs) > 1 else None, label="Stairs without a safety gate")
+    if outlets:
+        pack = next(n for n in (6, 12, 24, 36) if n >= len(outlets) or n == 36)
+        add(Finding(
+            id="baby_outlets", kind="hazard", severity=4,
+            title=f"{_count(outlets, 'uncovered outlet')} within reach",
+            object_ids=[o.id for o in outlets],
+            measurements=[Measurement(name="lowest_outlet", value=inches(min(floor_height(o) for o in outlets)), unit="in")],
+            fix_summary=f"Fit sliding outlet covers ({', '.join(sorted({rooms.get(o.room_id, o.room_id).lower() for o in outlets}))})",
+            product_query=ProductQuery(query=f"sliding outlet covers child safety {pack} pack"),
+            evidence=evidence_for(outlets[0], "Outlets within a toddler's reach"),
+        ), outlets[0].position, each=outlets if len(outlets) > 1 else None, label="Uncovered outlet")
     if corners:
         low = min(corners, key=lambda o: floor_height(o) + o.size[1])
         add(Finding(
@@ -116,6 +128,7 @@ def analyze(space: Space, profile: Profile) -> tuple[str, list[Finding], list[Ov
             evidence=evidence_for(plants[0], "Plant pot on the floor"),
         ), plants[0].position, each=plants, label="Floor plant")
 
+    split_budget(findings, profile.budget_usd)
     overlays.append(Overlay(type="camera", data={"mode": "first_person", "eye_height_m": 0.75}))
     findings.sort(key=lambda f: -f.severity)
     age = f" for a {profile.child_age_months}-month-old" if profile.child_age_months else ""

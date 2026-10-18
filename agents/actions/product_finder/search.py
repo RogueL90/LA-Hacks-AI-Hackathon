@@ -35,7 +35,8 @@ SEARCH_CONCURRENCY = 24
 LLM_TIMEOUT_S = 22
 DEFAULT_MODEL = "claude-sonnet-5-5"
 MAX_TOKENS = 3000
-CANDIDATES = 4
+CANDIDATES = int(os.environ.get("PRODUCT_FINDER_CANDIDATES", "4"))  # 6 for a deep pre-warm run
+SEARCH_USES = int(os.environ.get("PRODUCT_FINDER_SEARCHES", "2"))
 # Stores that answer bots with 403/429/503 or a captcha page even when the product is real.
 BLOCKED_STATUS = {401, 403, 405, 429, 503}
 BOT_WALL_WORDS = ("captcha", "robot check", "are you a human", "access denied", "verify you are human", "unusual traffic")
@@ -75,9 +76,14 @@ def _cache_save(data: dict) -> None:
 
 
 def _cache_store(query: str, quotes: list[ProductQuote]) -> None:
+    """Keep every verified product a search found (a pool), merged with earlier searches of the same
+    query, so each request picks from real options by its own price cap and size limits."""
     with _cache_lock:
         data = _cache_load()
-        data[query] = [quote.model_dump() for quote in quotes]
+        pool = {item.get("url"): item for item in data.get(query, []) if isinstance(item, dict)}
+        for quote in quotes:
+            pool[quote.url] = quote.copy(update={"finding_id": None}).model_dump()
+        data[query] = list(pool.values())
         _cache_save(data)
 
 
@@ -163,12 +169,13 @@ def choose_for_query(query: ProductQuery, candidates: list[ProductQuote]) -> lis
     Products whose page confirms the fit come before ones that don't list the attribute.
     """
     today = date.today().isoformat()
-    fitting: list[tuple[bool, ProductQuote]] = []
+    fitting: list[tuple[tuple[bool, bool], ProductQuote]] = []
     for quote in candidates:
         if not quote.url_verified:
             continue
-        if query.max_price_usd is not None and quote.price_usd > query.max_price_usd:
-            continue
+        # The price cap is a preference, not a filter: a real product over its share of the budget
+        # still beats no product, and the cart keeps the total honest.
+        over_cap = query.max_price_usd is not None and quote.price_usd > query.max_price_usd
         specs = dict(quote.specs or {})
         status, note = _fit(specs, query.constraints or {})
         if status is False:
@@ -182,8 +189,10 @@ def choose_for_query(query: ProductQuery, candidates: list[ProductQuote]) -> lis
             finding_id = raw_finding
         source = " Price from the store's search listing; confirm it at checkout." \
             if specs.get("verified_by") == "search_result" else ""
+        if over_cap:
+            source += f" Over this item's ${query.max_price_usd:,.0f} share of your budget."
         fitting.append((
-            status is None,
+            (over_cap, status is None),
             quote.copy(
                 update={
                     "specs": specs,
@@ -192,6 +201,7 @@ def choose_for_query(query: ProductQuery, candidates: list[ProductQuote]) -> lis
                 }
             ),
         ))
+    # Within the cap first, then confirmed fit, then cheapest.
     fitting.sort(key=lambda pair: (pair[0], pair[1].price_usd))
     ranked = [quote for _, quote in fitting]
     chosen: list[ProductQuote] = []
@@ -314,7 +324,7 @@ def _request_kwargs(model: str, messages: list) -> dict:
         "model": model,
         "max_tokens": MAX_TOKENS,
         "messages": messages,
-        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": SEARCH_USES}],
     }
     if re.match(r"claude-(opus|sonnet|haiku|fable)-5", model):
         # Finding and copying listings needs little reasoning; low effort keeps a query near 10 s.
@@ -473,7 +483,8 @@ async def verify_quote(client: httpx.AsyncClient, quote: ProductQuote, hits: dic
 async def resolve_query(client: httpx.AsyncClient, query: ProductQuery) -> tuple[list[ProductQuote], str | None]:
     cache = _cache_load()
     cached = cache.get(query.query)
-    if isinstance(cached, list) and cached:
+    # PRODUCT_FINDER_REFRESH=1 (the deep pre-warm run) always searches, to grow each query's pool.
+    if isinstance(cached, list) and cached and os.environ.get("PRODUCT_FINDER_REFRESH") != "1":
         # Cached quotes still carry the finding, quantity and limits of the request that first
         # searched them: clear those and choose again for this query, so they link to this
         # request's finding and respect its price cap and size limits.
@@ -497,8 +508,9 @@ async def resolve_query(client: httpx.AsyncClient, query: ProductQuery) -> tuple
         sum(1 for q in verified if q.specs.get("verified_by") == "search_result"),
         len(chosen), time.perf_counter() - t0,
     )
+    if verified:
+        _cache_store(query.query, verified)  # the whole pool, not just this request's picks
     if chosen:
-        _cache_store(query.query, chosen)
         return chosen, None
     if not raw_quotes:
         return [], f"no products found for: {query.query}"

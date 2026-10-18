@@ -8,7 +8,10 @@ from shared.models import Finding, Overlay, ProductQuery, Profile, Space
 
 # Fixtures and building parts belong to the dwelling claim, not contents.
 NOT_CONTENTS = {"outlet", "window", "light", "ceiling_light", "cord", "door", "toilet", "bathtub", "shower", "sink",
-                "counter", "cabinet", "stairs", "handrail", "grab_bar", "fireplace"}
+                "counter", "cabinet", "stairs", "handrail", "grab_bar", "fireplace",
+                # fixtures in the extractor's 96-type catalog
+                "vanity", "kitchen_island", "range_hood", "light_switch", "smoke_detector", "thermostat",
+                "towel_rack", "dishwasher", "built_in", "radiator", "ceiling_fan"}
 CONFIRM_BELOW = 0.6
 
 

@@ -219,6 +219,7 @@ def report():
             passed += ok
             print(f"  {'PASS' if ok else 'FAIL'} step {i}: {note}\n        got {seen}")
     print(f"\nEDGE CASES DONE: {passed}/{total} steps passed", flush=True)
+    os._exit(0 if passed == total else 1)  # the Bureau never stops on its own
 
 
 WANTED = [int(a) for a in sys.argv[1:]] or sorted(SCENARIOS)

@@ -82,6 +82,9 @@ def evidence_for(obj: SpaceObject, note: str) -> list[Evidence]:
     return seen or [Evidence(note=note)]
 
 
+SEVERITY_LABELS = {5: "Critical", 4: "Serious", 3: "Moderate", 2: "Minor", 1: "Minor"}
+
+
 def pin(overlays: list[Overlay], f: Finding, position: list[float] | None = None,
         badge: str | None = None, severity: int | None = None):
     """A viewer pin for a finding: the viewer draws it above `object_id` (Aditya's Pin overlay).
@@ -92,6 +95,16 @@ def pin(overlays: list[Overlay], f: Finding, position: list[float] | None = None
     data = {"finding_id": f.id, "severity": severity or f.severity, "title": f.title}
     if badge:
         data["badge"] = badge
+    # What the viewer shows when the pin is clicked: why it was flagged and what to do.
+    why = [f"{m.name.replace('_', ' ').capitalize()}: {m.value:g} {m.unit}"
+           + (f" (needs {m.required:g} {m.unit})" if m.required is not None else "") for m in f.measurements]
+    why += [e.note for e in f.evidence if e.note]
+    if why:
+        data["why"] = why
+    if f.fix_summary:
+        data["fix"] = f.fix_summary
+    if f.kind == "hazard":
+        data["severity_label"] = SEVERITY_LABELS.get(data["severity"], "Moderate")
     if f.object_ids:
         data["object_id"] = f.object_ids[0]
     if position:
@@ -100,3 +113,30 @@ def pin(overlays: list[Overlay], f: Finding, position: list[float] | None = None
     if frame:
         data["frame_url"] = frame
     overlays.append(Overlay(type="pin", data=data))
+
+
+# Typical cost weight of a fix's product (a handrail kit ~2, an outlet cover pack ~0.3), matched on its
+# search words. Used to give each product search a share of the user's budget.
+COST_WEIGHTS = [
+    ("handrail", 2.0), ("gate", 2.0), ("raised toilet seat", 1.2), ("grab bar", 1.0), ("rug pad", 1.0),
+    ("hinge", 0.6), ("night light", 0.6), ("anti-tip", 0.5), ("stove knob", 0.4), ("corner guard", 0.4),
+    ("cord cover", 0.4), ("toilet seat lock", 0.3), ("outlet cover", 0.3),
+]
+
+
+def cost_weight(query: str) -> float:
+    q = query.lower()
+    return next((w for word, w in COST_WEIGHTS if word in q), 1.0)
+
+
+def split_budget(findings: list[Finding], budget: float | None, ceiling_per_weight: float = 150) -> None:
+    """Give each product search a price cap: its share of the budget by typical cost, no more than a
+    sensible ceiling for its kind. Without a budget, searches stay uncapped."""
+    shopping = [f for f in findings if f.product_query]
+    if not budget or not shopping:
+        return
+    total = sum(cost_weight(f.product_query.query) * f.product_query.quantity for f in shopping) or 1
+    for f in shopping:
+        w = cost_weight(f.product_query.query)
+        # 30% headroom over the share: the cart still keeps the total within the budget.
+        f.product_query.max_price_usd = round(min(budget * w / total * 1.3, w * ceiling_per_weight), 2)

@@ -364,6 +364,7 @@ def main():
                 passed += ok
                 print(f"  {'PASS' if ok else 'FAIL'} step {i}: {note}\n        {seen}")
         print(f"\nCHAIN TESTS DONE: {passed}/{total} steps passed (started {started})", flush=True)
+        os._exit(0 if passed == total else 1)  # the Bureau never stops on its own
 
     bureau._loop.create_task(reporter())
     bureau.run()

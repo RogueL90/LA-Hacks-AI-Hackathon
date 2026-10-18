@@ -156,3 +156,44 @@ def test_no_plan_yet_means_no_charge(fake_stripe):
     ctx = FakeCtx()
     run(coord.shop(ctx, USER, {"job_id": "j"}))
     assert ctx.payments() == [] and fake_stripe["created"] == 0
+
+
+def test_cart_says_what_it_left_out_for_budget_and_what_it_could_not_find(fake_stripe):
+    async def finder(req):
+        quotes = []
+        for q in req.queries:
+            fid = q.constraints["finding_id"]
+            if fid == "elder_grab_1":
+                quotes.append(quote(fid, "https://s/grab", 90))
+            if fid == "elder_rug_1":
+                quotes.append(quote(fid, "https://s/rug", 40))
+        return FindProductsResult(job_id=req.job_id, ok=True, quotes=quotes)
+
+    async def cart(req):
+        return build_cart(req)
+
+    ctx = FakeCtx(agents={"product_finder": finder, "cart": cart})
+    state = {**plan_state(), "profile": {"budget_usd": 100.0}}
+    run(coord.shop(ctx, USER, state))
+    assert state["cart_notes"]["left_out"] == ["Rug pad"]  # $90 + $40 is over $100: the lower-priority fix went
+    card = str(ctx.cards()[-1])
+    assert "Left out to stay within budget: rug pad" in card
+
+
+def test_price_cap_never_hides_a_real_product():
+    """Live: monitors capped at $36 found nothing. A product over the cap is still offered, cheapest first."""
+    from agents.actions.product_finder.search import choose_for_query
+    from shared.models import ProductQuery
+    q = ProductQuery(query="27 inch IPS monitor", max_price_usd=36, quantity=2, constraints={"finding_id": "m"})
+    pool = [ProductQuote(title="Monitor A", url="https://s/a", merchant="S", price_usd=129.0, url_verified=True),
+            ProductQuote(title="Monitor B", url="https://s/b", merchant="S", price_usd=99.0, url_verified=True)]
+    chosen = choose_for_query(q, pool)
+    assert [c.url for c in chosen] == ["https://s/b", "https://s/a"]
+    assert "share of your budget" in chosen[0].fit_note
+    under = choose_for_query(q.copy(update={"max_price_usd": 120}), pool)
+    assert under[0].url == "https://s/b" and "share of your budget" not in under[0].fit_note
+
+
+def test_cart_keeps_the_most_important_item_even_over_budget():
+    cart = build_cart(CartRequest(job_id="j", budget_usd=50, quotes=[quote("a", "https://s/1", 90), quote("b", "https://s/2", 20)]))
+    assert [i.finding_id for i in cart.items] == ["a"] and not cart.within_budget

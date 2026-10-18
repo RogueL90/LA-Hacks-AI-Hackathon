@@ -34,7 +34,10 @@ def test_cached_quotes_are_chosen_again_for_this_request(tmp_path, monkeypatch):
 
     quotes, note = run(fetch())
     assert note is None
-    assert [(x.url, x.finding_id, x.specs["quantity"]) for x in quotes] == [("https://s/rail", "elder_NEW", 2)]  # $150 is over the cap
+    # Re-tagged for this request; the $150 one is over the $100 cap, so it's the backup, not hidden.
+    assert [(x.url, x.finding_id, x.specs["quantity"]) for x in quotes] == [("https://s/rail", "elder_NEW", 2),
+                                                                         ("https://s/rail2", "elder_NEW", 2)]
+    assert "share of your budget" in quotes[1].fit_note
 
 
 # --- understanding what the planner relays -------------------------------------------------------
@@ -105,13 +108,26 @@ def result(mode, viewer="http://127.0.0.1:5173/s/sp1?mode=elder&o=ov1"):
 
 
 @pytest.mark.parametrize("mode", ["elder", "baby", "transform", "claim"])
-def test_every_results_card_has_a_view_in_3d_button(mode):
-    card = json.dumps(ensure_ascii=False, obj=cards.results_card(result(mode), "https://img", "$1.00" if mode != "claim" else None))
-    assert "View in 3D" in card and "http://127.0.0.1:5173/s/sp1" in card
+def test_cards_have_no_link_buttons(mode):
+    """ASI:One card buttons only submit a selection and the first click locks the card (seen live: an
+    "Open at Walmart" click disabled every other button), so links live in the message text instead."""
+    card = json.dumps(cards.results_card(result(mode), "https://img", "$1.00" if mode != "claim" else None))
+    assert "redirect" not in card and "View in 3D" not in card
 
 
-def test_no_3d_button_without_a_viewer_link():
-    assert "View in 3D" not in json.dumps(ensure_ascii=False, obj=cards.results_card(result("elder", viewer=None), "https://img", "$1.00"))
+def test_results_message_links_the_3d_view():
+    async def fake_run_mode(ctx, state, mode, profile):
+        return result("elder")
+
+    ctx = FakeCtx()
+    state = {"job_id": "j", "space_id": "sp1", "rooms": [], "frames": {"elder": "https://img"}, "answers": {}}
+    orig = coord.run_mode
+    coord.run_mode = fake_run_mode
+    try:
+        run(coord.on_intake(ctx, USER, state, {"mode": "elder", "mobility_aid": "walker"}))
+    finally:
+        coord.run_mode = orig
+    assert any("[Open the 3D view of your home](http://127.0.0.1:5173/s/sp1" in t for t in ctx.texts())
 
 
 def cart():
@@ -120,16 +136,15 @@ def cart():
     return CartResult(job_id="j", ok=True, items=[q], subtotal_usd=48, within_budget=True, service_fee_usd="1.00")
 
 
-def test_cart_card_shows_prices_and_pay_link_but_not_store_links_before_paying():
+def test_cart_card_shows_prices_and_one_action_but_not_store_links_before_paying():
     card = json.dumps(ensure_ascii=False, obj=cards.cart_card(cart(), 300, "$1.00", "https://checkout.stripe.com/c/pay/cs_test_1"))
     assert "Your cart · 1 product" in card and "$24.00 × 2" in card and "Within your $300.00 budget" in card
-    assert "https://checkout.stripe.com/c/pay/cs_test_1" in card and "https://store/grab" not in card
+    assert "https://store/grab" not in card and "redirect" not in card and "I've paid" in card
 
 
-def test_receipt_has_the_store_links():
+def test_receipt_card_lists_the_products_without_link_buttons():
     card = json.dumps(ensure_ascii=False, obj=cards.receipt_card("$1.00", "abc", cart()))
-    assert "Payment received" in card and "https://store/grab" in card and "not an order" in card.lower() or \
-        "Nothing has been ordered" in card
+    assert "Payment received" in card and "Grab bar" in card and "redirect" not in card
 
 
 def test_claim_package_card_has_downloads_and_totals():
@@ -137,7 +152,7 @@ def test_claim_package_card_has_downloads_and_totals():
                        letter_pdf_url="http://x/a.pdf", total_usd=1234.5, item_count=3)
     priced = [Finding(id="a", kind="item", title="Sofa", value_usd=900, fix_summary="Living room · priced as sofa")]
     card = json.dumps(ensure_ascii=False, obj=cards.claim_package_card(pkg, priced, 2, "https://img"))
-    assert "$1,234.50" in card and "http://x/a.xlsx" in card and "2 to price by hand" in card
+    assert "$1,234.50" in card and "2 to price by hand" in card and "redirect" not in card
 
 
 # --- claim package flow ------------------------------------------------------------------------
@@ -202,3 +217,53 @@ def test_messages_to_one_conversation_keep_their_order_while_others_run_in_paral
     run(main())
     assert order.index("a1") < order.index("a2")  # same conversation: in order
     assert order.index("b1") < order.index("a1")  # another conversation didn't wait behind a1
+
+
+def test_approve_for_another_mode_is_a_mode_switch(fake_stripe):
+    """Live chain bug: "And list everything for insurance, replacement cost, ZIP 10001" on baby results
+    came back as approve_plan(mode=claim) and started shopping for the baby fixes."""
+    runs = []
+
+    async def fake_intake(ctx, sender, state, selection, intro=""):
+        runs.append(selection.get("mode"))
+
+    ctx = FakeCtx()
+    state = {"job_id": "j", "space_id": "s", "result": {"mode": "baby", "findings": []}, "answers": {}}
+    orig = coord.on_intake
+    coord.on_intake = fake_intake
+    try:
+        run(coord.route(ctx, USER, state, [], {"action": "approve_plan", "mode": "claim",
+                                               "policy_type": "replacement_cost", "zip_code": "10001"},
+                        "And list everything for insurance, replacement cost, ZIP 10001."))
+    finally:
+        coord.on_intake = orig
+    assert runs == ["claim"] and ctx.payments() == []
+
+
+def test_results_and_cart_are_written_out_in_the_message(fake_stripe):
+    from agents.actions.cart.logic import build_cart
+
+    async def fake_run_mode(ctx, state, mode, profile):
+        return result("elder")
+
+    ctx = FakeCtx()
+    state = {"job_id": "j", "space_id": "sp1", "rooms": [], "frames": {"elder": "https://img"}, "answers": {}}
+    orig = coord.run_mode
+    coord.run_mode = fake_run_mode
+    try:
+        run(coord.on_intake(ctx, USER, state, {"mode": "elder", "mobility_aid": "walker"}))
+    finally:
+        coord.run_mode = orig
+    assert any("- **Thing** (serious): Room · fix it" in t for t in ctx.texts())  # the finding and its fix
+
+    async def finder(req):
+        return FindProductsResult(job_id="j", ok=True, quotes=[ProductQuote(
+            title="Grab bar 18 in", url="https://s/g", merchant="Walmart", price_usd=21.5, url_verified=True,
+            finding_id="f1", specs={"quantity": 2, "role": "primary"})])
+
+    async def cart_agent(req):
+        return build_cart(req)
+
+    ctx.agents = {"product_finder": finder, "cart": cart_agent}
+    run(coord.shop(ctx, USER, state))
+    assert any("- Grab bar 18 in: $21.50 × 2 at Walmart" in t for t in ctx.texts())  # products, before paying

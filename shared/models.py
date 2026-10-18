@@ -41,6 +41,7 @@ class Door(Model):
     room_id: str
     position: list[float]
     width_m: float
+    kind: str = "door"                    # "door" | "doorway" (no leaf) | "open" (open-plan side, no wall)
 
 
 class Room(Model):
@@ -48,6 +49,8 @@ class Room(Model):
     name: str                             # "Hallway"
     polygon: list[list[float]]            # floor outline [[x,z], ...]
     height_m: float = 2.5
+    level: int = 0                        # 0 = entry floor, 1 = upstairs, -1 = basement
+    floor_material: Optional[str] = None  # wood | laminate | vinyl | tile | stone | carpet | concrete
 
 
 class Space(Model):

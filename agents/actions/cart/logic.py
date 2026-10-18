@@ -71,7 +71,9 @@ def build_cart(request: CartRequest) -> CartResult:
     budget = request.budget_usd
     dropped: list[str] = []
     if budget is not None:
-        while items and round(sum(line_total(quote) for quote in items), 2) > budget:
+        # Drop the lowest-priority items until the cart fits, but never to nothing: the most important
+        # fix stays (marked over budget) rather than showing the user an empty cart.
+        while len(items) > 1 and round(sum(line_total(quote) for quote in items), 2) > budget:
             removed = items.pop()
             dropped.append(removed.title)
     if dropped:

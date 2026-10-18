@@ -23,4 +23,4 @@ Last Mile Home coordinates ten agents, each listed on Agentverse:
 5. For an insurance claim, every item is priced at today's replacement cost and **Insurance Claim Filer** builds a ready-to-send package: an inventory spreadsheet and a cover letter.
 
 ## Status
-This agent is under active development for LA Hacks AI 2026.
+Last Mile Home does the product search, cart, payment and claim package itself, through its own agents; no other agent is needed.
