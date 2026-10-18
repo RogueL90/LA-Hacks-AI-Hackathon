@@ -1,6 +1,7 @@
 // The whole space: lighting, rooms, objects, overlays, camera controls, post-processing.
-import { Suspense, useEffect, useMemo, type MutableRefObject } from "react";
-import { useThree } from "@react-three/fiber";
+import { Suspense, useEffect, useMemo, useRef, type MutableRefObject } from "react";
+import { useFrame, useThree } from "@react-three/fiber";
+import { Vector3 } from "three";
 import { Environment, OrbitControls, SoftShadows } from "@react-three/drei";
 import { EffectComposer, N8AO, SMAA, ToneMapping } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
@@ -32,6 +33,8 @@ interface Props {
   /** A floor was clicked: start walking there (or move there if already walking). */
   onWalk: (entry: WalkEntry) => void;
   onWalkRoom: (name: string | null) => void;
+  /** Fly the camera to a point (a cart item picked in the panel); `key` changes for each request. */
+  focus?: { point: [number, number, number]; key: number; from?: [number, number] } | null;
 }
 
 export function spaceBounds(space: Space) {
@@ -60,6 +63,51 @@ function FitCamera({ center, span, walking }: { center: [number, number, number]
   return null;
 }
 
+/** Glides the camera to look at `focus` from close by, keeping the current viewing direction. */
+function FlyTo({ focus }: { focus: Props["focus"] }) {
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls) as unknown as { target: Vector3; update: () => void } | null;
+  const anim = useRef<{ from: Vector3; to: Vector3; tFrom: Vector3; tTo: Vector3; t0: number } | null>(null);
+  const done = useRef<number | null>(null);
+  useEffect(() => {
+    // Runs once per request, as soon as the controls exist (they register after the first frame).
+    if (!focus || !controls || done.current === focus.key) return;
+    done.current = focus.key;
+    const target = new Vector3(...focus.point);
+    let dir = camera.position.clone().sub(controls.target).normalize();
+    if (focus.from) {
+      // Come in from the middle of the item's room, so a grab bar on a wall is seen from inside the room.
+      const hx = focus.from[0] - target.x;
+      const hz = focus.from[1] - target.z;
+      const len = Math.hypot(hx, hz);
+      if (len > 0.3) dir = new Vector3((hx / len) * 0.6, 0.8, (hz / len) * 0.6).normalize();
+    }
+    if (dir.y < 0.8) {
+      dir.y = 0.8; // look down into the room from above the walls, never through one
+      dir.normalize();
+    }
+    anim.current = {
+      from: camera.position.clone(),
+      to: target.clone().add(dir.multiplyScalar(4.2)),
+      tFrom: controls.target.clone(),
+      tTo: target,
+      t0: -1,
+    };
+  }, [focus?.key, controls]); // eslint-disable-line react-hooks/exhaustive-deps
+  useFrame(({ clock }) => {
+    const a = anim.current;
+    if (!a || !controls) return;
+    if (a.t0 < 0) a.t0 = clock.elapsedTime;
+    const t = Math.min(1, (clock.elapsedTime - a.t0) / 0.9);
+    const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    camera.position.lerpVectors(a.from, a.to, e);
+    controls.target.lerpVectors(a.tFrom, a.tTo, e);
+    controls.update();
+    if (t >= 1) anim.current = null;
+  });
+  return null;
+}
+
 /** Floor click -> a standing spot facing into the room (toward its far side, never a wall). */
 function useFloorWalk(bounds: ReturnType<typeof walkBounds>, onWalk: (e: WalkEntry) => void) {
   const camera = useThree((s) => s.camera);
@@ -78,12 +126,13 @@ function useFloorWalk(bounds: ReturnType<typeof walkBounds>, onWalk: (e: WalkEnt
   };
 }
 
-export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect, walk, walkInput, onWalk, onWalkRoom }: Props) {
+export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect, walk, walkInput, onWalk, onWalkRoom, focus }: Props) {
   const { center, span } = useMemo(() => spaceBounds(space), [space]);
   const objectsById = useMemo(() => new Map(space.objects.map((o) => [o.id, o])), [space.objects]);
   const doors = useMemo(() => space.doors ?? [], [space.doors]);
   const roomsById = useMemo(() => new Map(space.rooms.map((r) => [r.id, r])), [space.rooms]);
   const roomOrder = useMemo(() => new Map(space.rooms.map((r, i) => [r.id, i])), [space.rooms]);
+  const roomIds = useMemo(() => new Set(space.rooms.map((r) => r.id)), [space.rooms]);
   const night = preset?.night ?? false;
   const accent = preset?.accent ?? NEUTRAL_ACCENT;
   const walking = walk !== null;
@@ -111,6 +160,7 @@ export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect, wal
       />
 
       <FitCamera center={center} span={span} walking={walking} />
+      {!walking && <FlyTo focus={focus ?? null} />}
       {walk && <WalkControls bounds={bounds} entry={walk} input={walkInput} onRoomChange={onWalkRoom} />}
       <SoftShadows size={18} samples={12} focus={0.6} />
 
@@ -145,6 +195,7 @@ export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect, wal
               walking={walking}
               selectedId={selectedId}
               onSelect={onSelect}
+              roomIds={roomIds}
             />
           </Rise>
         )}
