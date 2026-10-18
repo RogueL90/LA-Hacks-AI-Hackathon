@@ -352,17 +352,34 @@ async def _photo(client: httpx.AsyncClient, url: str) -> str | None:
     return None
 
 
-async def photos(urls: list[str]) -> dict[str, str]:
-    """The store's product photo for each page (og:image), cached; pages that hide it are skipped."""
+_FETCHING: set[asyncio.Task] = set()
+
+
+async def _fetch_photos(urls: list[str]) -> None:
+    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
+        found = await asyncio.gather(*(_photo(client, u) for u in urls))
+    cache = _load_photos()
+    cache.update({u: p or "" for u, p in zip(urls, found)})
+    try:
+        PHOTO_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        PHOTO_CACHE.write_text(json.dumps(cache, indent=1))
+    except OSError:
+        pass
+
+
+async def photos(urls: list[str], wait: bool = False) -> dict[str, str]:
+    """The store's product photo for each page (og:image), from the cache.
+
+    Pages not looked at yet are fetched in the background for next time (the cart message never
+    waits on a store page); with `wait`, they're fetched first. Pages that hide it are skipped.
+    """
     cache = _load_photos()
     missing = [u for u in dict.fromkeys(urls) if u not in cache]
-    if missing:
-        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
-            found = await asyncio.gather(*(_photo(client, u) for u in missing))
-        cache.update({u: p or "" for u, p in zip(missing, found)})
-        try:
-            PHOTO_CACHE.parent.mkdir(parents=True, exist_ok=True)
-            PHOTO_CACHE.write_text(json.dumps(cache, indent=1))
-        except OSError:
-            pass
+    if missing and wait:
+        await _fetch_photos(missing)
+        cache = _load_photos()
+    elif missing:
+        task = asyncio.get_running_loop().create_task(_fetch_photos(missing))
+        _FETCHING.add(task)
+        task.add_done_callback(_FETCHING.discard)
     return {u: cache[u] for u in urls if cache.get(u)}

@@ -35,6 +35,7 @@ from agents.coordinator.understand import fill_missing, fix_mode, understand
 from agents.specialists.baby.logic import analyze as baby_analyze
 from agents.specialists.claim.logic import analyze as claim_analyze
 from agents.specialists.elder.logic import analyze as elder_analyze
+from agents.specialists.transformer.logic import _goal_key, requested_items
 from agents.specialists.transformer.logic import analyze as transformer_analyze
 from shared.chat import (
     attachments,
@@ -57,6 +58,7 @@ from shared.models import (
     FindProductsRequest,
     FindProductsResult,
     Finding,
+    ProductQuote,
     ModeRequest,
     ModeResult,
     ProductQuery,
@@ -220,7 +222,8 @@ def has_answers(state: dict, mode: str) -> bool:
 
 
 SHOP_WORDS = re.compile(r"\b(products?|buy|shop(ping)?|cart|recommend\w*|purchase|prices?|order|proceed|approve\w*|"
-                        r"go ahead|links?|checkout|pay)\b", re.I)
+                        r"go ahead|links?|checkout|pay|equipment|suggest\w*|specific (items?|models?)|"
+                        r"where to get|what to get)\b", re.I)
 
 
 def repeats_answers(state: dict, selection: dict) -> bool:
@@ -234,7 +237,32 @@ def repeats_answers(state: dict, selection: dict) -> bool:
     # "person" is a free-text label the planner rewords every time ("man", "elder", "dad"); the checks
     # don't depend on it, so a new wording isn't a new answer.
     given = {k: v for k, v in selection.items() if k in MODE_KEYS.get(mode, set()) and k != "person"}
-    return all(str(known.get(k, "")).strip().lower() == str(v).strip().lower() for k, v in given.items())
+    for k, v in given.items():
+        if k == "requirements":
+            # Live: "two monitors, keyboard and mouse" came back as "dual-monitor setup, keyboard, mouse".
+            # Only an item the plan doesn't already cover is a new requirement.
+            plan = " ".join(f.get("title", "") for f in result.get("findings", [])).lower()
+            if any(it["title"].lower() not in plan for it in requested_items(str(v))):
+                return False
+        elif _same(k, known.get(k, "")) != _same(k, v):
+            return False  # a changed or newly given answer (budget, night trips, style...) is a new check
+    return True
+
+
+def _same(key: str, value) -> str:
+    """An answer in a form that ignores the planner's rewording ("$600" = "600", "modern style" = "modern")."""
+    s = str(value).strip().lower()
+    if key == "budget_usd":
+        n = _number(s, float)
+        return f"{n:g}" if n is not None else s
+    if key == "room_id":
+        return s.removeprefix("room_").replace(" ", "_")
+    if key == "style":
+        return s.replace(" style", "").replace("-style", "").strip()
+    if key == "goal":
+        goal = _goal_key(s)  # "modern home office" = "home office"; a goal it doesn't know stays as written
+        return goal if goal in s else s
+    return s
 
 
 async def route(ctx: Context, sender: str, state: dict, files: list[dict], selection: dict, text: str = ""):
@@ -778,6 +806,9 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         await send(ctx, sender, text_message("I couldn't reach the payment provider. Please say \"approve\" again in a moment."))
         return
     t_stripe = time.monotonic() - t0
+    # The cart, with a store link for every product: ASI:One shows this right above its Pay button, so
+    # the user can check what they're paying for before confirming.
+    in_cart = "\n".join(cart_line(q) for q in cart.items[:10])
     # Send RequestPayment before anything slow (or any LLM call) so ASI:One renders the payment card.
     await send(ctx, sender, RequestPayment(
         accepted_funds=[Funds(currency="USD", amount=total, payment_method="stripe")],
@@ -788,7 +819,8 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         metadata={
             "stripe": checkout["embedded"],
             "service": "maestro",
-            "content": f"Check out your cart of {len(cart.items)} products (${total}, Stripe test mode).",
+            "content": (f"Your cart: {len(cart.items)} product{'s' if len(cart.items) != 1 else ''}, ${total} with the "
+                        f"${fee} service fee (Stripe test mode, card 4242 4242 4242 4242).\n\n{in_cart}"),
         },
     ))
     state["payment"] = {
@@ -810,8 +842,7 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         ctx, sender, state,
         f"I found {len(cart.items)} product{'s' if len(cart.items) != 1 else ''} that fit and added "
         f"{'them' if len(cart.items) != 1 else 'it'} to your cart.{over}\n\n"
-        + "\n".join(f"- {_short(q.title)}: ${q.price_usd:,.2f}" + (f" × {_qty(q)}" if _qty(q) > 1 else "")
-                    + f" at {q.merchant}" for q in cart.items[:10])
+        + in_cart
         + f"\n\nProducts ${cart.subtotal_usd:,.2f} + ${fee} service fee = **${total}**.\n\n"
         + (f"**[See your cart in your home]({preview})**: every product is placed in 3D where it goes, at its "
            "real size, so you can see it before you buy.\n\n" if preview else "")
@@ -822,6 +853,12 @@ async def request_fee(ctx: Context, sender: str, state: dict):
     watch_payment(ctx, sender, reference)
     ctx.logger.info(f"job={reference} checkout requested (${total}): Stripe {t_stripe:.1f} s, "
                     f"replies {time.monotonic() - t0 - t_stripe:.1f} s")
+
+
+def cart_line(q: ProductQuote) -> str:
+    """One cart line with the store link, so the product can be checked before paying."""
+    return (f"- [{_short(q.title)}]({q.url}): ${q.price_usd:,.2f}" + (f" × {_qty(q)}" if _qty(q) > 1 else "")
+            + f" at {q.merchant}")
 
 
 CART_PREVIEW_WAIT_S = 4.5  # the cart message never waits longer than this for the 3D preview
@@ -838,6 +875,8 @@ async def cart_preview_link(ctx: Context, state: dict, cart: CartResult) -> str 
     if not space_id or not cart.items or result.get("mode") == "claim":
         return None
 
+    t0 = time.monotonic()
+
     async def build() -> str | None:
         space = await get_space(space_id)
         findings = [Finding.model_validate(f) for f in result.get("findings", [])]
@@ -850,7 +889,8 @@ async def cart_preview_link(ctx: Context, state: dict, cart: CartResult) -> str 
                 if not (o.type == "ghost_object" and "position" not in o.data)]
         stored = await post_overlays(space_id, result["mode"], kept + added, state["job_id"])
         ctx.logger.info(f"job={state['job_id']} cart preview: {len(added)} items placed in 3D "
-                        f"({sum(1 for q in cart.items if pictures.get(q.url))} photos) -> {stored.get('overlay_set_id')}")
+                        f"({sum(1 for q in cart.items if pictures.get(q.url))} photos) -> {stored.get('overlay_set_id')} "
+                        f"in {time.monotonic() - t0:.1f} s")
         return stored.get("viewer_url")
 
     try:

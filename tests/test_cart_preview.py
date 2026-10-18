@@ -1,5 +1,8 @@
 """See your cart in your home: cart items placed in the 3D model before you buy."""
+import asyncio
 import math
+
+import pytest
 
 from agents.coordinator import cart_preview as cp
 from shared.models import CartResult, Door, Finding, ProductQuery, ProductQuote, Room, Space, SpaceObject
@@ -77,3 +80,114 @@ def test_outlet_covers_go_on_each_outlet_and_unknown_things_are_a_box_beside_the
     assert cover["object_id"] == "out1" and cover["position"][0] > 3.01  # just in front of the outlet
     box = next(g for g in out if g["type"] == "package")
     assert box["room_id"] == "bath" and box["position"][1] == 0.1
+
+
+# --- the coordinator hook: never in the way of the cart or the payment ---------------------------
+
+from agents.coordinator import agent as coord  # noqa: E402
+from shared.models import Overlay  # noqa: E402
+from tests.conftest import FakeCtx, USER  # noqa: E402
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def cart_state(mode="elder"):
+    f = finding("f1", "toilet grab bar", ["toilet"])
+    cart = CartResult(job_id="job1", ok=True, items=[quote("f1", "Moen grab bar")], subtotal_usd=25.0,
+                      checkout_links=[])
+    return {"job_id": "job1", "space_id": "sp", "profile": {"budget_usd": 300},
+            "result": {"mode": mode, "summary": "s", "findings": [f.model_dump()], "overlay_set_id": "ov_pins",
+                       "job_id": "job1", "ok": True},
+            "cart": cart.model_dump()}, cart
+
+
+@pytest.fixture
+def service(monkeypatch):
+    calls = {"posted": None}
+
+    async def get_space(space_id):
+        return home()
+
+    async def get_overlays(space_id, overlay_set_id):
+        return [Overlay(type="pin", data={"object_id": "toilet", "finding_id": "f1"}),
+                Overlay(type="ghost_object", data={"label": "desk", "wall": "back", "action": "add"})]
+
+    async def post_overlays(space_id, mode, overlays, job_id):
+        calls["posted"] = (mode, overlays, job_id)
+        return {"overlay_set_id": "ov_cart", "viewer_url": "http://viewer/s/sp?mode=elder&o=ov_cart&live=1"}
+
+    async def photos(urls):
+        return {}
+
+    monkeypatch.setattr(coord, "get_space", get_space)
+    monkeypatch.setattr(coord, "get_overlays", get_overlays)
+    monkeypatch.setattr(coord, "post_overlays", post_overlays)
+    monkeypatch.setattr(cp, "photos", photos)
+    return calls
+
+
+@pytest.mark.cart_preview
+def test_the_preview_keeps_the_pins_adds_the_cart_and_drops_wall_only_notes(service):
+    state, cart = cart_state()
+    url = run(coord.cart_preview_link(FakeCtx(), state, cart))
+    assert url.endswith("o=ov_cart&live=1")
+    mode, overlays, job = service["posted"]
+    assert mode == "elder" and job == "job1"  # same conversation: an open 3D view follows it
+    assert [o.type for o in overlays] == ["pin", "ghost_object"] and overlays[1].data["type"] == "grab_bar"
+
+
+@pytest.mark.cart_preview
+def test_no_preview_for_a_claim_or_without_a_home(service):
+    state, cart = cart_state("claim")
+    assert run(coord.cart_preview_link(FakeCtx(), state, cart)) is None
+    state, cart = cart_state()
+    state["space_id"] = None
+    assert run(coord.cart_preview_link(FakeCtx(), state, cart)) is None
+    assert service["posted"] is None
+
+
+@pytest.mark.cart_preview
+def test_a_failing_or_slow_service_never_holds_up_the_cart(service, monkeypatch):
+    async def broken(space_id):
+        raise RuntimeError("Space Service is down")
+
+    monkeypatch.setattr(coord, "get_space", broken)
+    state, cart = cart_state()
+    ctx = FakeCtx()
+    assert run(coord.cart_preview_link(ctx, state, cart)) is None
+    assert any("cart preview skipped" in l for l in ctx.logger.lines)
+
+    async def slow(space_id):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(coord, "get_space", slow)
+    monkeypatch.setattr(coord, "CART_PREVIEW_WAIT_S", 0.2)
+    import time
+    t0 = time.monotonic()
+    assert run(coord.cart_preview_link(FakeCtx(), state, cart)) is None
+    assert time.monotonic() - t0 < 1
+
+
+@pytest.mark.cart_preview
+def test_the_cart_message_links_the_preview_and_the_payment_request_goes_first(service, fake_stripe):
+    state, cart = cart_state()
+    ctx = FakeCtx()
+    run(coord.request_fee(ctx, USER, state))
+    kinds = [type(m).__name__ for _, m in ctx.sent]
+    assert kinds.index("RequestPayment") < kinds.index("ChatMessage")
+    assert any("[See your cart in your home](http://viewer/s/sp?mode=elder&o=ov_cart&live=1)" in t for t in ctx.texts())
+
+
+@pytest.mark.cart_preview
+def test_without_a_preview_the_cart_message_is_unchanged(service, fake_stripe, monkeypatch):
+    async def broken(space_id):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(coord, "get_space", broken)
+    state, cart = cart_state()
+    ctx = FakeCtx()
+    run(coord.request_fee(ctx, USER, state))
+    text = next(t for t in ctx.texts() if "added it to your cart" in t or "added them to your cart" in t)
+    assert "See your cart in your home" not in text and "Tap **Pay**" in text

@@ -266,7 +266,12 @@ def test_results_and_cart_are_written_out_in_the_message(fake_stripe):
 
     ctx.agents = {"product_finder": finder, "cart": cart_agent}
     run(coord.shop(ctx, USER, state))
-    assert any("- Grab bar 18 in: $21.50 × 2 at Walmart" in t for t in ctx.texts())  # products, before paying
+    line = "- [Grab bar 18 in](https://s/g): $21.50 × 2 at Walmart"
+    assert any(line in t for t in ctx.texts())  # products with their store links, before paying
+    # The payment request lists them too: ASI:One shows it right above its Pay button.
+    from uagents_core.contrib.protocols.payment import RequestPayment
+    request = next(m for _, m in ctx.sent if isinstance(m, RequestPayment))
+    assert line in request.metadata["content"] and "4242" in request.metadata["content"]
 
 
 def test_uploads_signal_rides_on_the_first_reply():
@@ -406,6 +411,61 @@ def test_the_live_restated_intake_with_a_new_person_label_goes_to_the_cart():
     text = ("Hi, following up on our earlier conversation: the resident is an 84-year-old man who uses a walker "
             "and walks to the bathroom at night. Include walker clearance, night-path lighting, rugs and grab bars "
             "so I can find products for each fix.")
+    orig = coord.shop, coord.on_intake
+    coord.shop, coord.on_intake = fake_shop, fake_intake
+    try:
+        run(coord.route(FakeCtx(), USER, state, [], selection, text))
+    finally:
+        coord.shop, coord.on_intake = orig
+    assert went == ["shop"]
+
+
+def office_results_state():
+    findings = [{"id": "transform_item_0", "title": "Add: Monitor ×2"}, {"id": "transform_item_1", "title": "Add: Keyboard and mouse"},
+                {"id": "transform_keep_desk", "title": "Keep the light wood desk with brass legs"}]
+    return {"result": {"mode": "transform", "findings": findings},
+            "answers": {"goal": "modern home office", "room_id": "office", "style": "modern", "budget_usd": "600",
+                        "requirements": "two monitors, keyboard and mouse"}}
+
+
+def test_a_reworded_office_request_on_shown_results_is_a_repeat():
+    """Live (fix 1): after the plan was shown, the planner sent the same request reworded ("dual-monitor
+    setup", "$600", "modern style") with "equipment budget"; Maestro planned again instead of shopping."""
+    state = office_results_state()
+    reworded = {"action": "choose_mode", "mode": "transform", "goal": "home office", "room_id": "room_office",
+                "style": "modern style", "budget_usd": "$600", "requirements": "dual-monitor setup, keyboard, mouse"}
+    assert coord.repeats_answers(state, reworded)
+    assert coord.SHOP_WORDS.search("total equipment budget $600")
+
+
+def test_real_changes_to_an_office_plan_still_make_a_new_plan():
+    state = office_results_state()
+    base = {"action": "choose_mode", "mode": "transform", "goal": "home office", "room_id": "office", "budget_usd": "600"}
+    assert not coord.repeats_answers(state, {**base, "budget_usd": "900"})                 # new budget
+    assert not coord.repeats_answers(state, {**base, "room_id": "bedroom"})               # another room
+    assert not coord.repeats_answers(state, {**base, "goal": "home gym"})                 # another goal
+    assert not coord.repeats_answers(state, {**base, "requirements": "add a bookshelf"})  # an item not in the plan
+    other = office_results_state()
+    other["answers"]["goal"] = "reading nook"
+    assert not coord.repeats_answers(other, {**base, "goal": "music studio"})
+
+
+def test_the_reworded_repeat_with_equipment_goes_to_the_cart():
+    went = []
+
+    async def fake_shop(ctx, sender, state):
+        went.append("shop")
+
+    async def fake_intake(ctx, sender, state, selection, intro=""):
+        went.append("intake")
+
+    state = {"job_id": "j", "space_id": "s", **office_results_state()}
+    state["result"]["findings"] = []
+    state["result"]["findings"] = office_results_state()["result"]["findings"]
+    selection = {"action": "choose_mode", "mode": "transform", "goal": "modern home office", "room_id": "office",
+                 "budget_usd": "600", "requirements": "dual-monitor setup, keyboard, mouse", "style": "modern"}
+    text = ("The user wants to turn their office into a modern home office with a two-monitor setup, keyboard and "
+            "mouse, total equipment budget $600. Here is the video of the room.")
     orig = coord.shop, coord.on_intake
     coord.shop, coord.on_intake = fake_shop, fake_intake
     try:

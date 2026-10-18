@@ -151,3 +151,21 @@ def offline_summary(monkeypatch):
         return summary.fallback_steps(result, cart, notes)
 
     monkeypatch.setattr(summary, "next_steps", steps)
+
+
+@pytest.fixture(autouse=True)
+def offline_cart_preview(monkeypatch, request):
+    """The 3D cart preview talks to the Space Service; flow tests run without it (tests/test_cart_preview.py
+    covers it with fakes)."""
+    if request.node.get_closest_marker("cart_preview"):
+        return
+    from agents.coordinator import agent as coord
+
+    async def none(ctx, state, cart):
+        return None
+
+    monkeypatch.setattr(coord, "cart_preview_link", none)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "cart_preview: runs the real 3D cart preview hook (with a fake Space Service)")
