@@ -113,7 +113,13 @@ def save(ctx: Context, sender: str, state: dict):
     ctx.storage.set(_key(ctx, sender), state)
 
 
+FLAG_UPLOADS: dict = {}  # session -> the next reply should also say "this agent accepts uploads"
+
+
 async def send(ctx: Context, to: str, msg: ChatMessage):
+    if FLAG_UPLOADS.pop(ctx.session, False):
+        msg = ChatMessage(timestamp=msg.timestamp, msg_id=msg.msg_id,
+                          content=[*msg.content, MetadataContent(type="metadata", metadata={"attachments": "true"})])
     t0 = time.monotonic()
     status = await ctx.send(to, msg)
     took = time.monotonic() - t0
@@ -143,11 +149,10 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     ctx.logger.info(f"{_now()} from={sender[:16]}… session={ctx.session} text={text[:200]!r} files={len(files)} "
                     f"selection={selection} (understood in {time.monotonic() - t_in:.1f} s)")
 
-    if starting and not state:
-        # Tells ASI:One this agent accepts uploads, so the user can attach a video or photos.
-        await ctx.send(sender, ChatMessage(
-            timestamp=msg.timestamp, msg_id=uuid4(),
-            content=[MetadataContent(type="metadata", metadata={"attachments": "true"})]))
+    # Tells ASI:One this agent accepts uploads. It rides on the first reply instead of being its own
+    # message: ASI:One takes several seconds to accept each chat message, and a separate one ahead of
+    # the reply doubled the first answer's wait (30 s seen live).
+    FLAG_UPLOADS[ctx.session] = starting and not state
     try:
         await route(ctx, sender, state, files, selection, text)
     except Exception:

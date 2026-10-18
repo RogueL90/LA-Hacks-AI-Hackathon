@@ -267,3 +267,27 @@ def test_results_and_cart_are_written_out_in_the_message(fake_stripe):
     ctx.agents = {"product_finder": finder, "cart": cart_agent}
     run(coord.shop(ctx, USER, state))
     assert any("- Grab bar 18 in: $21.50 × 2 at Walmart" in t for t in ctx.texts())  # products, before paying
+
+
+def test_uploads_signal_rides_on_the_first_reply():
+    """One chat message on the first turn, not two: ASI:One takes seconds to accept each one."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    from uagents_core.contrib.protocols.chat import ChatMessage, MetadataContent, StartSessionContent, TextContent
+
+    ctx = FakeCtx(session="new-chat")
+    msg = ChatMessage(timestamp=datetime.now(timezone.utc), msg_id=uuid4(),
+                      content=[StartSessionContent(type="start-session"), TextContent(type="text", text="hi")])
+
+    async def quiet(text, card):
+        return {"action": "other"}
+
+    orig = coord.understand
+    coord.understand = quiet
+    try:
+        run(coord.on_chat(ctx, USER, msg))
+    finally:
+        coord.understand = orig
+    chats = ctx.chats()
+    assert len(chats) == 1  # the reply carries the uploads flag; no separate message
+    assert any(isinstance(c, MetadataContent) and c.metadata.get("attachments") == "true" for c in chats[0].content)
