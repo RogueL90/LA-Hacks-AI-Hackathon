@@ -126,11 +126,18 @@ def _severity_badge(f: Finding) -> dict:
     return {"label": label, "variant": variant}
 
 
-def _buttons(fee_label: str | None, approve: str = "Find products") -> dict:
+def _view_button(view_url: str | None) -> list[dict]:
+    """Open the 3D model with every finding pinned (the card is what ASI:One shows; its text may be rewritten)."""
+    return [{"type": "button", "label": "View in 3D", "action": {"selection": {"action": "link_opened"}, "redirect": view_url}}] \
+        if view_url else []
+
+
+def _buttons(fee_label: str | None, approve: str = "Find products", view_url: str | None = None) -> dict:
     buttons = []
     if fee_label:
         buttons.append({"type": "button", "label": approve, "primary": True,
                         "action": {"selection": {"action": "approve_plan"}}})
+    buttons += _view_button(view_url)
     buttons.append({"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}})
     return {"type": "group", "direction": "row", "gap": 8, "children": buttons}
 
@@ -182,7 +189,7 @@ def _hazard_results(result: ModeResult, image: str, fee_label: str | None) -> di
             {"type": "divider"},
             *picker,
             *footer,
-            _buttons(fee_label),
+            _buttons(fee_label, view_url=result.viewer_url),
         ],
     }}
 
@@ -221,7 +228,7 @@ def _transform_results(result: ModeResult, image: str, fee_label: str | None) ->
             {"type": "divider"},
             *picker,
             *footer,
-            _buttons(fee_label, "Find products"),
+            _buttons(fee_label, "Find products", result.viewer_url),
         ],
     }}
 
@@ -248,6 +255,7 @@ def _claim_results(result: ModeResult, image: str) -> dict:
             {"type": "group", "direction": "row", "gap": 8, "children": [
                 {"type": "button", "label": "Build my claim package", "primary": True,
                  "action": {"selection": {"action": "approve_plan"}}},
+                *_view_button(result.viewer_url),
                 {"type": "button", "label": "Other checks", "action": {"selection": {"action": "show_modes"}}},
             ]},
         ],

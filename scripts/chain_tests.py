@@ -119,7 +119,8 @@ CASES = {
         (tap(action="choose_mode", mode="elder"), lambda r: ("mobility_aid" in r.form_fields(), "elder questions")),
         (tap(action="submit_intake", mode="elder", person="Grandpa", age="88", mobility_aid="wheelchair",
              night_trips=False, budget_usd="500"),
-         lambda r: (r.title().startswith("Elder safety") and "36" in json.dumps(r.cards), "36 in wheelchair rule applied")),
+         lambda r: (r.title().startswith("Elder safety") and ("needs 36 in" in json.dumps(r.cards) or "needs 32 in" in json.dumps(r.cards)),
+                    "wheelchair clearances applied (ADA: 32 in doors, 36 in paths)")),
     ]),
     3: ("Elder, no aid, no night trips: fewer findings", {"elder"}, [
         (chat("Check my aunt's flat for fall risks. She's 70, walks fine, sleeps through the night.", [VIDEO], start=True),
@@ -334,9 +335,16 @@ def main():
         for name, mode, text, ok in PARALLEL.get(n, []):
             key = f"{n:02d} {name}"
             EXPECTED[key] = {mode}
-            users.append(make_user(key, [(chat(text, [VIDEO], start=True),
-                                          lambda r, ok=ok, mode=mode: (ok(r), f"{mode} results"))],
-                                   delay=30 + 8 * len(CASES)))  # the three parallel users start together
+            # Under load a build can outlast the 50 s ASI:One wait: the agent says "Still mapping" and
+            # posts the results when they're ready, so the second step listens for that delivery.
+            seen = {}
+            users.append(make_user(key, [
+                (chat(text, [VIDEO], start=True),
+                 lambda r, ok=ok, mode=mode, seen=seen: (seen.__setitem__("done", ok(r)) or
+                                                         seen["done"] or "still mapping" in r.text.lower(),
+                                                         f"{mode} results, or a promise to post them")),
+                ("wait", lambda r, ok=ok, mode=mode, seen=seen: (seen["done"] or ok(r), f"{mode} results delivered")),
+            ], delay=30 + 8 * len(CASES)))  # the three parallel users start together
     started = time.strftime("%H:%M:%S")
     bureau = Bureau(port=PORT, endpoint=[f"http://127.0.0.1:{PORT}/submit"])
     for u in users:

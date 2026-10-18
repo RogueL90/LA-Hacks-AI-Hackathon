@@ -1,0 +1,158 @@
+"""Cart Builder rules and the coordinator's approve -> products -> cart -> fee flow."""
+import asyncio
+
+from agents.actions.cart.logic import build_cart, merge_duplicates
+from agents.coordinator import agent as coord
+from shared.models import (CartRequest, Finding, FindProductsRequest, FindProductsResult, ModeResult, ProductQuery,
+                           ProductQuote)
+from tests.conftest import FakeCtx, USER
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def quote(fid, url, price, role="primary", qty=1, verified=True, title=None):
+    return ProductQuote(title=title or f"Product {fid}", url=url, merchant="Store", price_usd=price,
+                        url_verified=verified, finding_id=fid, specs={"quantity": qty, "role": role})
+
+
+# --- Cart Builder ----------------------------------------------------------------------------
+
+def test_same_product_for_two_findings_is_one_line_with_quantity_two():
+    items = merge_duplicates([quote("a", "https://s/seat", 30), quote("b", "https://s/seat", 30), quote("c", "https://s/x", 10)])
+    assert [(i.url, i.specs["quantity"]) for i in items] == [("https://s/seat", 2), ("https://s/x", 1)]
+
+
+def test_cart_keeps_primary_drops_its_backup_and_unverified():
+    cart = build_cart(CartRequest(job_id="j", quotes=[
+        quote("a", "https://s/1", 20), quote("a", "https://s/2", 25, role="backup"),
+        quote("b", "https://s/3", 15, verified=False)]))
+    assert [i.url for i in cart.items] == ["https://s/1"]
+
+
+def test_backup_is_used_when_the_primary_is_missing():
+    cart = build_cart(CartRequest(job_id="j", quotes=[quote("a", "https://s/2", 25, role="backup")]))
+    assert [i.url for i in cart.items] == ["https://s/2"]
+
+
+def test_budget_drops_lowest_priority_items_and_fee_is_flat():
+    cart = build_cart(CartRequest(job_id="j", budget_usd=50, quotes=[
+        quote("a", "https://s/1", 30), quote("b", "https://s/2", 15), quote("c", "https://s/3", 40)]))
+    assert cart.subtotal_usd <= 50 and cart.within_budget
+    assert [i.finding_id for i in cart.items] == ["a", "b"]  # the last (lowest priority) item went
+    assert cart.service_fee_usd == "1.00"
+
+
+def test_empty_cart_has_no_fee():
+    cart = build_cart(CartRequest(job_id="j", quotes=[]))
+    assert cart.items == [] and cart.service_fee_usd == "0.00"
+
+
+def test_quantity_counts_in_the_subtotal():
+    cart = build_cart(CartRequest(job_id="j", quotes=[quote("a", "https://s/1", 10, qty=3)]))
+    assert cart.subtotal_usd == 30
+
+
+# --- approve -> products -> cart -> fee --------------------------------------------------------
+
+def plan_state():
+    findings = [
+        Finding(id="elder_grab_1", kind="hazard", title="No grab bar", severity=4, fix_summary="Install a grab bar",
+                product_query=ProductQuery(query="grab bar 18 in")),
+        Finding(id="elder_rug_1", kind="hazard", title="Loose rug", severity=3, fix_summary="Rug pad",
+                product_query=ProductQuery(query="rug pad 5x8")),
+        Finding(id="elder_path_1", kind="hazard", title="Chair blocks the path", severity=5, fix_summary="Move it"),
+    ]
+    result = ModeResult(job_id="job1", mode="elder", ok=True, summary="3 hazards", findings=findings)
+    return {"job_id": "job1", "space_id": "sp1", "mode": "elder", "result": result.model_dump(), "result_id": "r1",
+            "profile": {"budget_usd": 100.0}, "frames": {"elder": "https://img"}}
+
+
+def shop_agents(searches):
+    async def finder(req: FindProductsRequest):
+        searches.append([q.query for q in req.queries])
+        quotes = [quote(q.constraints["finding_id"], f"https://s/{q.constraints['finding_id']}", 20)
+                  for q in req.queries]
+        return FindProductsResult(job_id=req.job_id, ok=True, quotes=quotes)
+
+    async def cart(req: CartRequest):
+        return build_cart(req)
+
+    return {"product_finder": finder, "cart": cart}
+
+
+def test_approve_builds_a_cart_and_asks_for_the_fee_before_showing_it(fake_stripe):
+    searches = []
+    ctx = FakeCtx(agents=shop_agents(searches))
+    state = plan_state()
+    run(coord.shop(ctx, USER, state))
+    assert searches == [["grab bar 18 in", "rug pad 5x8"]]  # only fixes that need buying, most severe first
+    assert ctx.payments() == ["RequestPayment"]
+    kinds = [type(m).__name__ for _, m in ctx.sent]
+    assert kinds.index("RequestPayment") < kinds.index("ChatMessage")  # payment request first, then the card
+    assert ctx.last_card_title().startswith("Your cart · 2 products")
+    assert state["payment"]["fee"] == "1.00" and len(state["payment"]["stripe_sessions"]) == 2
+
+
+def test_approve_uses_the_search_started_with_the_results(fake_stripe):
+    searches = []
+    ctx = FakeCtx(agents=shop_agents(searches))
+    state = plan_state()
+
+    async def flow():
+        coord.prefetch(ctx, state)          # started when the results card was shown
+        await coord.shop(ctx, USER, state)  # the user approves
+
+    run(flow())
+    assert len(searches) == 1  # no second search
+
+
+def test_picked_fixes_only(fake_stripe):
+    searches = []
+    ctx = FakeCtx(agents=shop_agents(searches))
+    state = {**plan_state(), "chosen_fixes": ["elder_rug_1"]}
+    run(coord.shop(ctx, USER, state))
+    assert searches == [["rug pad 5x8"]]
+
+
+def test_approve_again_or_after_cancel_shows_the_same_cart_without_a_new_charge(fake_stripe):
+    searches = []
+    ctx = FakeCtx(agents=shop_agents(searches))
+    state = plan_state()
+    run(coord.shop(ctx, USER, state))
+    for status in ("requested", "rejected"):
+        state["payment"]["status"] = status
+        run(coord.shop(ctx, USER, state))
+        assert ctx.last_card_title().startswith("Your cart")
+    assert fake_stripe["created"] == 1 and len(searches) == 1 and ctx.payments() == ["RequestPayment"]
+
+
+def test_no_products_found_means_no_charge(fake_stripe):
+    async def finder(req):
+        return FindProductsResult(job_id=req.job_id, ok=True, quotes=[])
+
+    async def cart(req):
+        return build_cart(req)
+
+    ctx = FakeCtx(agents={"product_finder": finder, "cart": cart})
+    state = plan_state()
+    run(coord.shop(ctx, USER, state))
+    assert ctx.payments() == [] and fake_stripe["created"] == 0
+    assert any("nothing to charge" in t for t in ctx.texts())
+
+
+def test_cart_agent_down_uses_the_same_cart_rules_locally(fake_stripe):
+    searches = []
+    agents = shop_agents(searches)
+    del agents["cart"]
+    ctx = FakeCtx(agents=agents)
+    state = plan_state()
+    run(coord.shop(ctx, USER, state))
+    assert ctx.last_card_title().startswith("Your cart · 2 products")
+
+
+def test_no_plan_yet_means_no_charge(fake_stripe):
+    ctx = FakeCtx()
+    run(coord.shop(ctx, USER, {"job_id": "j"}))
+    assert ctx.payments() == [] and fake_stripe["created"] == 0

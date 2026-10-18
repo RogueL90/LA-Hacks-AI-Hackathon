@@ -31,7 +31,7 @@ from uagents_core.contrib.protocols.payment import (
 )
 
 from agents.coordinator import cards
-from agents.coordinator.understand import fill_missing, understand
+from agents.coordinator.understand import fill_missing, fix_mode, understand
 from agents.specialists.baby.logic import analyze as baby_analyze
 from agents.specialists.claim.logic import analyze as claim_analyze
 from agents.specialists.elder.logic import analyze as elder_analyze
@@ -131,7 +131,7 @@ async def on_chat(ctx: Context, sender: str, msg: ChatMessage):
     files = [f for f in attachments(msg) if f["url"] not in state.get("media", [])]
     selection = parse_selection(text)
     if not selection and text:
-        selection = fill_missing(text, await understand(text, state.get("last_card")))
+        selection = fix_mode(text, fill_missing(text, await understand(text, state.get("last_card"))))
     ctx.logger.info(f"{_now()} from={sender[:16]}… session={ctx.session} text={text[:200]!r} files={len(files)} "
                     f"selection={selection} (understood in {time.monotonic() - t_in:.1f} s)")
 
@@ -608,7 +608,7 @@ async def shop(ctx: Context, sender: str, state: dict):
     if (state.get("payment") or {}).get("status") == "paid":
         await after_payment(ctx, sender, state, state["payment"].get("session", ""), again=True)
         return
-    if state.get("cart") and (state.get("payment") or {}).get("status") == "requested" \
+    if state.get("cart") and (state.get("payment") or {}).get("status") in ("requested", "rejected") \
             and state.get("cart_for") == state.get("chosen_fixes"):
         await send_card(ctx, sender, state, "Here's your cart again. Pay the service fee to get the store links.", "custom",
                         cards.cart_card(CartResult.model_validate(state["cart"]), state.get("profile", {}).get("budget_usd"),
@@ -656,6 +656,7 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         ctx.logger.exception("Stripe checkout failed")
         await send(ctx, sender, text_message("I couldn't reach the payment provider. Please say \"approve\" again in a moment."))
         return
+    t_stripe = time.monotonic() - t0
     # Send RequestPayment before anything slow (or any LLM call) so ASI:One renders the payment card.
     await ctx.send(sender, RequestPayment(
         accepted_funds=[Funds(currency="USD", amount=fee, payment_method="stripe")],
@@ -684,7 +685,7 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         f"I found {len(cart.items)} product{'s' if len(cart.items) != 1 else ''} that fit, ${cart.subtotal_usd:,.2f} in total.{over} "
         f"Pay the ${fee} service fee ([secure Stripe checkout]({checkout['hosted_url']})) to get the store links, then tap I've paid.",
         "custom", cards.cart_card(cart, budget, f"${fee}", checkout["hosted_url"]))
-    ctx.logger.info(f"job={reference} fee requested: Stripe + replies {time.monotonic() - t0:.1f} s")
+    ctx.logger.info(f"job={reference} fee requested: Stripe {t_stripe:.1f} s, replies {time.monotonic() - t0 - t_stripe:.1f} s")
 
 
 async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
@@ -710,6 +711,28 @@ async def verify_paid(ctx: Context, state: dict, session_id: str) -> bool:
         return False
 
 
+async def find_paid_session(ctx: Context, state: dict) -> str | None:
+    """Which of this conversation's checkouts (the one inside ASI:One, the Pay link) was paid.
+
+    Stripe is asked about all of them at once, then the Payment Verifier agent confirms the paid
+    one. One verifier request at a time: uagents matches replies by (agent, session), so two
+    requests to the same agent in one conversation both receive the first reply.
+    """
+    payment = state.get("payment") or {}
+    sessions = payment.get("stripe_sessions", [])
+    fee = float(payment.get("fee") or FLAT_SERVICE_FEE_USD)
+    looked = await asyncio.gather(*(stripe_pay.is_paid(sid, expected_usd=fee) for sid in sessions), return_exceptions=True)
+    if any(isinstance(x, Exception) for x in looked):
+        ctx.logger.warning("Stripe lookup failed; asking the Payment Verifier about each checkout in turn")
+        candidates = sessions
+    else:
+        candidates = [sid for sid, paid in zip(sessions, looked) if paid]
+    for session_id in candidates:
+        if await verify_paid(ctx, state, session_id):
+            return session_id
+    return None
+
+
 async def after_payment(ctx: Context, sender: str, state: dict, session_id: str, again: bool = False):
     state["payment"] = {**state.get("payment", {}), "status": "paid", "session": session_id}
     cart = CartResult.model_validate(state["cart"]) if state.get("cart") else None
@@ -728,13 +751,10 @@ async def check_payment(ctx: Context, sender: str, state: dict):
     if payment.get("status") == "paid":
         await after_payment(ctx, sender, state, payment.get("session", ""), again=True)
         return
-    # The embedded and the hosted checkout are separate sessions: check both at once.
-    sessions = payment.get("stripe_sessions", [])
-    paid = await asyncio.gather(*(verify_paid(ctx, state, sid) for sid in sessions))
-    for session_id, ok in zip(sessions, paid):
-        if ok:
-            await after_payment(ctx, sender, state, session_id)
-            return
+    session_id = await find_paid_session(ctx, state)
+    if session_id:
+        await after_payment(ctx, sender, state, session_id)
+        return
     await send_card(ctx, sender, state, "I don't see the payment yet. Finish the Stripe checkout, then tap I've paid again.",
                     "custom", cards.payment_card(fee_label(state), payment.get("checkout_url", "https://checkout.stripe.com")))
 
@@ -875,7 +895,8 @@ async def settle_commit(ctx: Context, sender: str, state: dict, msg: CommitPayme
 async def on_reject(ctx: Context, sender: str, msg: RejectPayment):
     ctx.logger.info(f"PAYMENT rejected by {sender[:16]}…: {msg.reason}")
     state = load(ctx, sender)
-    state["payment"] = {"status": "rejected"}
+    # Keep the checkouts: the user may still pay with the card's Pay link and tap I've paid.
+    state["payment"] = {**(state.get("payment") or {}), "status": "rejected"}
     save(ctx, sender, state)
     await send(ctx, sender, text_message("No problem, the payment was cancelled. Say \"approve\" when you're ready."))
 

@@ -1,0 +1,204 @@
+"""Smaller parts of the flow: product cache, message understanding, cards, claim package, send order."""
+import asyncio
+import json
+
+import pytest
+
+from agents.coordinator import agent as coord
+from agents.coordinator import cards
+from agents.coordinator.understand import fill_missing, fix_mode
+from shared.models import (CartResult, ClaimPackage, ClaimRequest, Finding, FindProductsResult, ModeResult,
+                           ProductQuery, ProductQuote)
+from tests.conftest import FakeCtx, USER
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+# --- Product Finder cache (live bug: cached quotes kept an old finding id and were dropped) ----
+
+def test_cached_quotes_are_chosen_again_for_this_request(tmp_path, monkeypatch):
+    from agents.actions.product_finder import search
+
+    monkeypatch.setattr(search, "CACHE_PATH", tmp_path / "queries.json")
+    old = [ProductQuote(title="Handrail kit", url="https://s/rail", merchant="S", price_usd=40, url_verified=True,
+                        finding_id="elder_OLD", specs={"quantity": 1, "role": "primary"}),
+           ProductQuote(title="Handrail premium", url="https://s/rail2", merchant="S", price_usd=150, url_verified=True,
+                        finding_id="elder_OLD", specs={"quantity": 1, "role": "backup"})]
+    search._cache_store("stair handrail kit", old)
+
+    async def fetch():
+        q = ProductQuery(query="stair handrail kit", max_price_usd=100, quantity=2, constraints={"finding_id": "elder_NEW"})
+        return await search.resolve_query(None, q)
+
+    quotes, note = run(fetch())
+    assert note is None
+    assert [(x.url, x.finding_id, x.specs["quantity"]) for x in quotes] == [("https://s/rail", "elder_NEW", 2)]  # $150 is over the cap
+
+
+# --- understanding what the planner relays -------------------------------------------------------
+
+@pytest.mark.parametrize("text, expected", [
+    ("the resident is an 84-year-old man who uses a walker and gets up at night. Budget: $300.",
+     {"mobility_aid": "walker", "night_trips": "true", "age": "84", "budget_usd": "300"}),
+    ("Grandpa is 88 and uses a wheelchair, $1,200 budget", {"mobility_aid": "wheelchair", "age": "88", "budget_usd": "1200"}),
+    ("She's 70, walks fine, sleeps through the night.", {"night_trips": "false", "age": "70"}),
+    ("My toddler is 14 months old", {"child_age_months": "14"}),
+    ("my son is 2 years old", {"child_age_months": "24"}),
+    ("Replacement cost policy, ZIP 90024", {"policy_type": "replacement_cost", "zip_code": "90024"}),
+])
+def test_answers_the_interpreter_missed_are_filled(text, expected):
+    got = fill_missing(text, {"action": "choose_mode"})
+    assert {k: got.get(k) for k in expected} == expected
+
+
+def test_the_interpreters_answers_win():
+    assert fill_missing("uses a walker", {"mobility_aid": "cane"})["mobility_aid"] == "cane"
+
+
+def test_making_a_nursery_is_a_room_makeover_not_baby_proofing():
+    assert fix_mode("Make a nursery in the attic please.", {"action": "choose_mode", "mode": "baby"}) == \
+        {"action": "choose_mode", "mode": "transform", "goal": "nursery"}
+    assert fix_mode("Baby-proof the nursery, she's 9 months", {"action": "choose_mode", "mode": "baby"})["mode"] == "baby"
+
+
+def test_restated_answers_after_results_are_not_a_new_intake():
+    """Live bug: the planner rewrote "find products" as the whole intake again and the check re-ran."""
+    state = {"result": {"mode": "elder"}, "answers": {"person": "Dad", "age": "84", "mobility_aid": "walker",
+                                                      "night_trips": "true", "budget_usd": "300"}}
+    restated = {"action": "submit_intake", "mode": "elder", "age": "84", "mobility_aid": "walker",
+                "night_trips": "true", "budget_usd": "300", "person": "Dad"}
+    assert coord.repeats_answers(state, restated)
+    assert coord.SHOP_WORDS.search("recommend specific products within the $300 budget")
+    assert not coord.repeats_answers(state, {**restated, "mobility_aid": "wheelchair"})  # a real change re-runs
+
+
+def test_restated_request_for_products_goes_to_the_cart(fake_stripe):
+    calls = []
+
+    async def fake_shop(ctx, sender, state):
+        calls.append("shop")
+
+    ctx = FakeCtx()
+    state = {"job_id": "j", "space_id": "s", "result": {"mode": "elder", "findings": []},
+             "answers": {"mobility_aid": "walker", "budget_usd": "300"}}
+    orig = coord.shop
+    coord.shop = fake_shop
+    try:
+        run(coord.route(ctx, USER, state, [], {"action": "submit_intake", "mode": "elder", "mobility_aid": "walker",
+                                               "budget_usd": "300"}, "Please recommend products for these fixes"))
+    finally:
+        coord.shop = orig
+    assert calls == ["shop"]
+
+
+# --- cards ---------------------------------------------------------------------------------------
+
+def result(mode, viewer="http://127.0.0.1:5173/s/sp1?mode=elder&o=ov1"):
+    f = [Finding(id="f1", kind="hazard" if mode != "claim" else "item", title="Thing", severity=4,
+                 fix_summary="Room · fix it", product_query=ProductQuery(query="q"))]
+    if mode == "transform":
+        f = [Finding(id="transform_item_0", kind="suggestion", title="Add: Desk", fix_summary="fits",
+                     product_query=ProductQuery(query="desk"))]
+    return ModeResult(job_id="j", mode=mode, ok=True, summary="s", findings=f, viewer_url=viewer)
+
+
+@pytest.mark.parametrize("mode", ["elder", "baby", "transform", "claim"])
+def test_every_results_card_has_a_view_in_3d_button(mode):
+    card = json.dumps(ensure_ascii=False, obj=cards.results_card(result(mode), "https://img", "$1.00" if mode != "claim" else None))
+    assert "View in 3D" in card and "http://127.0.0.1:5173/s/sp1" in card
+
+
+def test_no_3d_button_without_a_viewer_link():
+    assert "View in 3D" not in json.dumps(ensure_ascii=False, obj=cards.results_card(result("elder", viewer=None), "https://img", "$1.00"))
+
+
+def cart():
+    q = ProductQuote(title="Grab bar", url="https://store/grab", merchant="Store", price_usd=24, url_verified=True,
+                     specs={"quantity": 2, "role": "primary"}, fit_note="Prices as of today. fits")
+    return CartResult(job_id="j", ok=True, items=[q], subtotal_usd=48, within_budget=True, service_fee_usd="1.00")
+
+
+def test_cart_card_shows_prices_and_pay_link_but_not_store_links_before_paying():
+    card = json.dumps(ensure_ascii=False, obj=cards.cart_card(cart(), 300, "$1.00", "https://checkout.stripe.com/c/pay/cs_test_1"))
+    assert "Your cart · 1 product" in card and "$24.00 × 2" in card and "Within your $300.00 budget" in card
+    assert "https://checkout.stripe.com/c/pay/cs_test_1" in card and "https://store/grab" not in card
+
+
+def test_receipt_has_the_store_links():
+    card = json.dumps(ensure_ascii=False, obj=cards.receipt_card("$1.00", "abc", cart()))
+    assert "Payment received" in card and "https://store/grab" in card and "not an order" in card.lower() or \
+        "Nothing has been ordered" in card
+
+
+def test_claim_package_card_has_downloads_and_totals():
+    pkg = ClaimPackage(job_id="j", ok=True, inventory_xlsx_url="http://x/a.xlsx", inventory_csv_url="http://x/a.csv",
+                       letter_pdf_url="http://x/a.pdf", total_usd=1234.5, item_count=3)
+    priced = [Finding(id="a", kind="item", title="Sofa", value_usd=900, fix_summary="Living room · priced as sofa")]
+    card = json.dumps(ensure_ascii=False, obj=cards.claim_package_card(pkg, priced, 2, "https://img"))
+    assert "$1,234.50" in card and "http://x/a.xlsx" in card and "2 to price by hand" in card
+
+
+# --- claim package flow ------------------------------------------------------------------------
+
+def test_claim_package_prices_items_and_marks_the_rest(monkeypatch):
+    findings = [Finding(id=f"claim_{i}", kind="item", title=f"Item {i}", fix_summary="Kitchen · priced as x",
+                        product_query=ProductQuery(query=f"item {i} replacement price")) for i in range(3)]
+    state = {"job_id": "j", "space_id": "sp", "result_id": "r", "frames": {"claim": "https://img"},
+             "result": ModeResult(job_id="j", mode="claim", ok=True, summary="s", findings=findings).model_dump()}
+    filed = []
+
+    async def finder(req):
+        quotes = [ProductQuote(title="x", url=f"https://s/{q.constraints['finding_id']}", merchant="S", price_usd=100,
+                               url_verified=True, finding_id=q.constraints["finding_id"], specs={"role": "primary"})
+                  for q in req.queries[:2]]  # the third item finds no price
+        return FindProductsResult(job_id="j", ok=True, quotes=quotes)
+
+    async def filer(req: ClaimRequest):
+        filed.append(req)
+        total = sum(f.value_usd or 0 for f in req.findings)
+        return ClaimPackage(job_id="j", ok=True, inventory_xlsx_url="http://x/a.xlsx", total_usd=total,
+                            item_count=len(req.findings))
+
+    ctx = FakeCtx(agents={"product_finder": finder, "insurance_filer": filer})
+    run(coord.build_claim(ctx, USER, state))
+    assert ctx.last_card_title() == "Claim package · $200.00"
+    assert [f.value_basis for f in filed[0].findings] == ["estimate", "estimate", "needs_price"]
+    assert ctx.payments() == []  # no fee for a claim package
+
+
+# --- sending order (shared/uagents_patch) ------------------------------------------------------
+
+def test_messages_to_one_conversation_keep_their_order_while_others_run_in_parallel():
+    from uagents.communication import Dispenser
+    from shared import uagents_patch
+
+    order, started = [], []
+
+    class Env:
+        def __init__(self, target, session, name):
+            self.target, self.session, self.name = target, session, name
+
+    async def process(self, env, endpoints, future, sync):
+        started.append(env.name)
+        await asyncio.sleep(0.05 if env.name == "a1" else 0.01)
+        order.append(env.name)
+        future.set_result("ok")
+
+    async def main():
+        d = Dispenser()
+        d._process_envelope = process.__get__(d)
+        task = asyncio.create_task(uagents_patch._run(d))
+        loop = asyncio.get_running_loop()
+        futures = []
+        for name, target in [("a1", "A"), ("a2", "A"), ("b1", "B")]:
+            fut = loop.create_future()
+            futures.append(fut)
+            d.add_envelope(Env(target, "s1", name), ["http://x"], fut)
+        await asyncio.gather(*futures)
+        task.cancel()
+
+    run(main())
+    assert order.index("a1") < order.index("a2")  # same conversation: in order
+    assert order.index("b1") < order.index("a1")  # another conversation didn't wait behind a1

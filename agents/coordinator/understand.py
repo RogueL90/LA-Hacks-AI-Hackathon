@@ -5,6 +5,7 @@ tap or a form it sends prose ("The user selected mode \"elder\" on the card...")
 module maps that prose, plus ordinary requests, onto the same selection dicts.
 """
 import json
+import re
 
 from openai import AsyncOpenAI
 
@@ -183,3 +184,19 @@ def fill_missing(text: str, selection: dict) -> dict:
         if m and 40 <= int(m.group(1) or m.group(2)) <= 120:
             out["age"] = m.group(1) or m.group(2)
     return out
+
+
+_TRANSFORM = re.compile(
+    r"\b(?:make|turn|convert|transform|set up|create|build|repurpose|change)\b[^.]{0,40}?\b(?:into |a |an |as |the )?"
+    r"(nursery|home office|office|gym|workout room|guest room|guest bedroom|studio|playroom|craft room|library)\b", re.I)
+
+
+def fix_mode(text: str, selection: dict) -> dict:
+    """"Make a nursery in the attic" is a room makeover (Space Transformer), not baby-proofing."""
+    m = _TRANSFORM.search(text or "")
+    if not m or selection.get("action") not in ("choose_mode", "submit_intake", "other", None):
+        return selection
+    if selection.get("mode") in (None, "baby", "transform"):
+        return {**selection, "action": selection.get("action") if selection.get("action") != "other" else "choose_mode",
+                "mode": "transform", "goal": selection.get("goal") or m.group(1).lower()}
+    return selection
