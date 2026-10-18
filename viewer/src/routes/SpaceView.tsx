@@ -118,7 +118,19 @@ export function SpaceView() {
     [state],
   );
   const paramLevel = params.get("level") === null ? NaN : Number(params.get("level"));
-  const level = levelChoice ?? (levels.includes(paramLevel) ? paramLevel : levels[0] ?? 0);
+  // With findings, open on the floor that has the most of them (the night path is often upstairs).
+  const pinnedLevel = useMemo(() => {
+    if (state.status !== "ready" || !state.overlaySet) return null;
+    const roomLevel = new Map(state.space.rooms.map((r) => [r.id, r.level ?? 0]));
+    const objectLevel = new Map(state.space.objects.map((o) => [o.id, roomLevel.get(o.room_id) ?? 0]));
+    const counts = new Map<number, number>();
+    for (const o of state.overlaySet.overlays) {
+      const id = o.type === "pin" ? (o.data?.object_id as string | undefined) : undefined;
+      if (id && objectLevel.has(id)) counts.set(objectLevel.get(id)!, (counts.get(objectLevel.get(id)!) ?? 0) + 1);
+    }
+    return counts.size ? [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0] : null;
+  }, [state]);
+  const level = levelChoice ?? (levels.includes(paramLevel) ? paramLevel : pinnedLevel ?? levels[0] ?? 0);
   const visible = useMemo(() => (state.status === "ready" ? onLevel(state.space, level) : null), [state, level]);
 
   const camera = useMemo(() => {

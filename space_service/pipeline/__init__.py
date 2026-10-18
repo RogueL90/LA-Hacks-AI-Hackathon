@@ -35,10 +35,26 @@ def load_prebuilt(space_id: str = DEMO_SPACE_ID) -> Space:
 
 
 def build_space(request: SpaceBuildRequest) -> Space:
-    """Run the full pipeline. Until it is wired up, returns the prebuilt demo space."""
+    """Run the full pipeline, or return the saved Space when this exact media was built before.
+
+    Until the pipeline is wired up (USE_PREBUILT=1), returns the prebuilt demo space.
+    """
     if USE_PREBUILT:
         return load_prebuilt()
-    return run_pipeline(request)
+    from pipeline import cache
+
+    try:
+        cache_key = cache.key(request.media_urls, request.floor_plan_urls, request.notes)
+    except Exception:  # can't fingerprint (a host that refuses ranges, a timeout): just build
+        cache_key = None
+    hit = cache.lookup(cache_key) if cache_key else None
+    if hit is not None:
+        return hit
+
+    space = run_pipeline(request)
+    if cache_key:
+        cache.store(cache_key, space)
+    return space
 
 
 def run_pipeline(

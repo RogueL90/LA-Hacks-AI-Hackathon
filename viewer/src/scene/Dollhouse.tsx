@@ -17,6 +17,7 @@ import {
   type WalkInput,
 } from "./WalkControls";
 import { ObjectMesh } from "./ObjectMesh";
+import { Rise, RISE_S, ROOM_STAGGER_S } from "./Rise";
 import { OverlayLayer } from "../overlays/OverlayLayer";
 
 interface Props {
@@ -82,6 +83,7 @@ export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect, wal
   const objectsById = useMemo(() => new Map(space.objects.map((o) => [o.id, o])), [space.objects]);
   const doors = useMemo(() => space.doors ?? [], [space.doors]);
   const roomsById = useMemo(() => new Map(space.rooms.map((r) => [r.id, r])), [space.rooms]);
+  const roomOrder = useMemo(() => new Map(space.rooms.map((r, i) => [r.id, i])), [space.rooms]);
   const night = preset?.night ?? false;
   const accent = preset?.accent ?? NEUTRAL_ACCENT;
   const walking = walk !== null;
@@ -112,27 +114,34 @@ export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect, wal
       {walk && <WalkControls bounds={bounds} entry={walk} input={walkInput} onRoomChange={onWalkRoom} />}
       <SoftShadows size={18} samples={12} focus={0.6} />
 
-      <group onPointerMissed={() => onSelect(null)}>
-        <Suspense fallback={null}>
-          {space.rooms.map((room) => (
-            <RoomShell key={room.id} room={room} doors={doors} walking={walking} onFloorClick={floorWalk} />
+      <Suspense fallback={null}>
+        <group onPointerMissed={() => onSelect(null)}>
+          {space.rooms.map((room, i) => (
+            <Rise key={room.id} delay={i * ROOM_STAGGER_S}>
+              <RoomShell room={room} doors={doors} walking={walking} onFloorClick={floorWalk} />
+            </Rise>
           ))}
-        </Suspense>
-        {space.objects.map((o) => (
-          <ObjectMesh
-            key={o.id}
-            object={o}
-            room={roomsById.get(o.room_id)}
-            selected={o.id === selectedId}
-            night={night}
-            accent={accent}
-            walking={walking}
-            onSelect={onSelect}
-          />
-        ))}
-      </group>
+          {space.objects.map((o) => (
+            <Rise key={o.id} delay={(roomOrder.get(o.room_id) ?? 0) * ROOM_STAGGER_S + RISE_S * 0.6}>
+              <ObjectMesh
+                object={o}
+                room={roomsById.get(o.room_id)}
+                selected={o.id === selectedId}
+                night={night}
+                accent={accent}
+                walking={walking}
+                onSelect={onSelect}
+              />
+            </Rise>
+          ))}
+        </group>
 
-      {overlaySet && <OverlayLayer overlays={overlaySet.overlays} objectsById={objectsById} preset={preset} />}
+        {overlaySet && (
+          <Rise drop delay={space.rooms.length * ROOM_STAGGER_S + RISE_S}>
+            <OverlayLayer overlays={overlaySet.overlays} objectsById={objectsById} preset={preset} />
+          </Rise>
+        )}
+      </Suspense>
 
       {/* Ground that only shows the house's real shadow (ContactShadows drew stray blobs with SoftShadows). */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[center[0], -0.002, center[2]]} receiveShadow>

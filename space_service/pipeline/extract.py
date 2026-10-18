@@ -15,6 +15,7 @@ inside the JSON-schema subset structured outputs supports.
 """
 import math
 import time
+import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Optional
 
@@ -32,8 +33,8 @@ Flag = Literal[FLAGS]  # type: ignore[valid-type]
 Shape = Literal["rectangular", "round", "oval", "l_shaped", "irregular"]
 
 ROOM_IMAGE_PX = 1024  # per-room calls see fewer frames, so each can be sharper
-MAX_FRAMES_PER_ROOM = 12
-ROOM_WORKERS = 4  # concurrent per-room calls; more mostly buys 429s
+MAX_FRAMES_PER_ROOM = int(os.getenv("MAX_FRAMES_PER_ROOM", "12"))
+ROOM_WORKERS = int(os.getenv("ROOM_WORKERS", "4"))  # concurrent per-room calls; more mostly buys 429s
 ROOM_RETRIES = 2  # parallel calls on one key do hit rate limits
 DEDUPE_M = 0.6  # same-type objects this close, seen from two open-plan rooms, are one object
 
