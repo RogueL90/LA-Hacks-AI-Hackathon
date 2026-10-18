@@ -75,6 +75,15 @@ def create_overlays(space_id: str, body: OverlaySetCreate) -> OverlaySetCreated:
     return OverlaySetCreated(overlay_set_id=overlay_set_id)
 
 
+@app.get("/spaces/{space_id}/overlays/latest")
+def latest_overlays(space_id: str) -> dict:
+    """The newest overlay set for a space, so an open viewer can follow new checks live."""
+    latest = storage.latest_overlay_set(space_id)
+    if latest is None:
+        raise HTTPException(404, f"no overlays for space {space_id}")
+    return latest
+
+
 @app.get("/spaces/{space_id}/overlays/{overlay_set_id}", response_model=OverlaySet)
 def get_overlays(space_id: str, overlay_set_id: str) -> OverlaySet:
     overlay_set = storage.load_overlay_set(space_id, overlay_set_id)

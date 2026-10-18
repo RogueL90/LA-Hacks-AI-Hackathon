@@ -21,6 +21,7 @@ from schemas import Space
 CACHE_VERSION = "2"
 CACHE_DIR = DATA_DIR / "cache"
 ENABLED = os.getenv("BUILD_CACHE", "1") == "1"
+MIN_SECONDS = float(os.getenv("CACHE_MIN_SECONDS", "5"))  # a cache hit still takes this long
 HEAD_BYTES = 1 << 20
 LOCAL_MEDIA_PREFIX = f"{PUBLIC_BASE_URL}/files/media/"
 

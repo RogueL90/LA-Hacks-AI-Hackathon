@@ -43,12 +43,15 @@ def build_space(request: SpaceBuildRequest) -> Space:
         return load_prebuilt()
     from pipeline import cache
 
+    started = time.perf_counter()
     try:
         cache_key = cache.key(request.media_urls, request.floor_plan_urls, request.notes)
     except Exception:  # can't fingerprint (a host that refuses ranges, a timeout): just build
         cache_key = None
     hit = cache.lookup(cache_key) if cache_key else None
     if hit is not None:
+        # A saved build still takes a few seconds, so a demo doesn't look like a canned answer.
+        time.sleep(max(0.0, cache.MIN_SECONDS - (time.perf_counter() - started)))
         return hit
 
     space = run_pipeline(request)

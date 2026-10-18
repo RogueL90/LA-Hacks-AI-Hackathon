@@ -138,7 +138,14 @@ export function Dollhouse({ space, overlaySet, preset, selectedId, onSelect, wal
 
         {overlaySet && (
           <Rise drop delay={space.rooms.length * ROOM_STAGGER_S + RISE_S}>
-            <OverlayLayer overlays={overlaySet.overlays} objectsById={objectsById} preset={preset} />
+            <OverlayLayer
+              overlays={overlaySet.overlays}
+              objectsById={objectsById}
+              preset={preset}
+              walking={walking}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
           </Rise>
         )}
       </Suspense>

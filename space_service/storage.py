@@ -39,6 +39,17 @@ def save_overlay_set(space_id: str, overlay_set: OverlaySet) -> str:
     return overlay_set_id
 
 
+def latest_overlay_set(space_id: str) -> Optional[dict]:
+    """{"overlay_set_id", "mode"} of the newest overlay set saved for a space (the viewer's live mode)."""
+    if not OVERLAYS_DIR.exists():
+        return None
+    for path in sorted(OVERLAYS_DIR.glob("ov_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("space_id") == space_id:
+            return {"overlay_set_id": path.stem, "mode": payload.get("mode")}
+    return None
+
+
 def load_overlay_set(space_id: str, overlay_set_id: str) -> Optional[OverlaySet]:
     path = OVERLAYS_DIR / f"{overlay_set_id}.json"
     if not path.exists():

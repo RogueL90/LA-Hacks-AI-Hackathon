@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Canvas } from "@react-three/fiber";
-import { fetchOverlaySet, fetchSpace } from "../lib/api";
+import { fetchLatestOverlay, fetchOverlaySet, fetchSpace } from "../lib/api";
 import { objectSize } from "../lib/defaults";
 import type { OverlaySet, Space } from "../lib/types";
 import { Dollhouse, spaceBounds } from "../scene/Dollhouse";
@@ -70,7 +70,10 @@ export function SpaceView() {
   const modeParam = params.get("mode");
   const overlaySetId = params.get("o");
   const isSnapshot = params.get("snapshot") === "1";
-  const preset = isMode(modeParam) ? MODE_PRESETS[modeParam] : null;
+  const live = params.get("live") === "1";
+  const [liveMode, setLiveMode] = useState<string | null>(null);
+  const shownMode = liveMode ?? modeParam;
+  const preset = isMode(shownMode) ? MODE_PRESETS[shownMode] : null;
 
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -113,6 +116,33 @@ export function SpaceView() {
     };
   }, [spaceId, overlaySetId]);
 
+  // Live: when a new check runs on this home (elder, then baby...), switch to its findings.
+  const shownOverlayId = useRef<string | null>(overlaySetId);
+  useEffect(() => {
+    if (!live) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const latest = await fetchLatestOverlay(spaceId);
+        if (cancelled || latest.overlay_set_id === shownOverlayId.current) return;
+        const overlaySet = await fetchOverlaySet(spaceId, latest.overlay_set_id);
+        if (cancelled) return;
+        shownOverlayId.current = latest.overlay_set_id;
+        setLiveMode(latest.mode);
+        setSelectedId(null);
+        setLevelChoice(null);
+        setState((s) => (s.status === "ready" ? { ...s, overlaySet } : s));
+      } catch {
+        /* no overlays yet, or the service is restarting: try again next tick */
+      }
+    };
+    const timer = window.setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [live, spaceId]);
+
   const levels = useMemo(
     () => (state.status === "ready" ? [...new Set(state.space.rooms.map((r) => r.level ?? 0))].sort((a, b) => a - b) : []),
     [state],
@@ -145,6 +175,10 @@ export function SpaceView() {
   const { overlaySet } = state;
   const space = visible!;
   const selected = space.objects.find((o) => o.id === selectedId) ?? null;
+  const pins = (overlaySet?.overlays ?? []).filter((o) => o.type === "pin").map((o) => o.data ?? {});
+  const findingsFor = (objectId: string) => pins.filter((p) => p.object_id === objectId);
+  const onFloor = new Set(space.objects.map((o) => o.id));
+  const pinsHere = pins.filter((p) => onFloor.has(p.object_id)).length;
 
   return (
     <div className="viewer" style={{ background: THEME.background }}>
@@ -227,13 +261,49 @@ export function SpaceView() {
       {!isSnapshot && selected && (
         <aside className="side-card">
           <h2>{selected.label}</h2>
-          <p className="muted">{selected.type.replace(/_/g, " ")}</p>
-          <p>
+          <p className="muted">
+            {selected.type.replace(/_/g, " ")} ·{" "}
             {objectSize(selected)
               .map((m) => `${Math.round(m * 39.37)} in`)
               .join(" × ")}
           </p>
-          {selected.evidence?.[0]?.frame_url && <img src={selected.evidence[0].frame_url} alt="Video frame" />}
+          {findingsFor(selected.id).map((f, i) => (
+            <section key={i} className="finding" style={{ borderColor: preset?.accent }}>
+              <div className="finding-head">
+                {f.severity_label && (
+                  <span className="finding-severity" style={{ background: preset?.accent }}>
+                    {f.severity_label}
+                  </span>
+                )}
+                <strong>{f.title}</strong>
+              </div>
+              {f.why?.length > 0 && (
+                <>
+                  <h3>Why it's flagged</h3>
+                  <ul>
+                    {f.why.map((w: string, j: number) => (
+                      <li key={j}>{w}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {f.fix && (
+                <>
+                  <h3>Fix</h3>
+                  <p>{f.fix}</p>
+                </>
+              )}
+            </section>
+          ))}
+          {(findingsFor(selected.id)[0]?.frame_url ?? selected.evidence?.[0]?.frame_url) && (
+            <img src={findingsFor(selected.id)[0]?.frame_url ?? selected.evidence?.[0]?.frame_url} alt="Where it was seen in your video" />
+          )}
+        </aside>
+      )}
+      {!isSnapshot && !selected && pinsHere > 0 && (
+        <aside className="findings-hint">
+          {live && <span className="live-dot" />}
+          {pinsHere} finding{pinsHere === 1 ? "" : "s"} on this floor · click a marker to see what's flagged and why
         </aside>
       )}
     </div>
