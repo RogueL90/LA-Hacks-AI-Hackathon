@@ -30,7 +30,7 @@ from uagents_core.contrib.protocols.payment import (
     payment_protocol_spec,
 )
 
-from agents.coordinator import cards, summary
+from agents.coordinator import cards, cart_preview, summary
 from agents.coordinator.understand import fill_missing, fix_mode, understand
 from agents.specialists.baby.logic import analyze as baby_analyze
 from agents.specialists.claim.logic import analyze as claim_analyze
@@ -69,7 +69,7 @@ from shared.models import (
 )
 from shared import stripe_pay, uagents_patch
 from shared.payments import FLAT_SERVICE_FEE_USD, format_service_fee_usd
-from shared.space_client import get_space
+from shared.space_client import get_overlays, get_space, post_overlays
 
 ADDRESSES = json.loads((config.ROOT / "shared" / "addresses.json").read_text())
 MODE_AGENT = {"elder": "elder", "baby": "baby", "transform": "transformer", "claim": "claim"}
@@ -800,6 +800,7 @@ async def request_fee(ctx: Context, sender: str, state: dict):
     }
     budget = (state.get("profile") or {}).get("budget_usd")
     notes = state.get("cart_notes") or {}
+    preview = await cart_preview_link(ctx, state, cart)
     over = ""
     if notes.get("left_out"):
         over += f" To stay within your ${budget:,.0f} budget I left out: {'; '.join(notes['left_out']).lower()}."
@@ -812,13 +813,51 @@ async def request_fee(ctx: Context, sender: str, state: dict):
         + "\n".join(f"- {_short(q.title)}: ${q.price_usd:,.2f}" + (f" × {_qty(q)}" if _qty(q) > 1 else "")
                     + f" at {q.merchant}" for q in cart.items[:10])
         + f"\n\nProducts ${cart.subtotal_usd:,.2f} + ${fee} service fee = **${total}**.\n\n"
-        f"Tap **Pay** on the payment request to check out **${total}** with Stripe. It's a demo checkout in "
+        + (f"**[See your cart in your home]({preview})**: every product is placed in 3D where it goes, at its "
+           "real size, so you can see it before you buy.\n\n" if preview else "")
+        + f"Tap **Pay** on the payment request to check out **${total}** with Stripe. It's a demo checkout in "
         "Stripe test mode: use card 4242 4242 4242 4242, nothing is really charged or shipped. "
         "I'll confirm your order here as soon as it goes through.",
         "custom", cards.cart_card(cart, budget, f"${fee}", None, notes, f"${total}"), terminal=True)
     watch_payment(ctx, sender, reference)
     ctx.logger.info(f"job={reference} checkout requested (${total}): Stripe {t_stripe:.1f} s, "
                     f"replies {time.monotonic() - t0 - t_stripe:.1f} s")
+
+
+CART_PREVIEW_WAIT_S = 4.5  # the cart message never waits longer than this for the 3D preview
+
+
+async def cart_preview_link(ctx: Context, state: dict, cart: CartResult) -> str | None:
+    """Put the cart's products in the 3D home (see before you buy); the viewer link, or None.
+
+    The preview is a new overlay set for this conversation: the results' pins plus every cart item
+    placed where it goes. An open 3D view of this conversation switches to it on its own.
+    """
+    result = state.get("result") or {}
+    space_id = state.get("space_id")
+    if not space_id or not cart.items or result.get("mode") == "claim":
+        return None
+
+    async def build() -> str | None:
+        space = await get_space(space_id)
+        findings = [Finding.model_validate(f) for f in result.get("findings", [])]
+        room = cart_preview.room_for(space, findings, (state.get("profile") or {}).get("room_id"))
+        pictures = await cart_preview.photos([q.url for q in cart.items[:10]])
+        added = cart_preview.ghosts(space, cart, findings, room, pictures)
+        if not added:
+            return None
+        kept = [o for o in await get_overlays(space_id, result.get("overlay_set_id") or "")
+                if not (o.type == "ghost_object" and "position" not in o.data)]
+        stored = await post_overlays(space_id, result["mode"], kept + added, state["job_id"])
+        ctx.logger.info(f"job={state['job_id']} cart preview: {len(added)} items placed in 3D "
+                        f"({sum(1 for q in cart.items if pictures.get(q.url))} photos) -> {stored.get('overlay_set_id')}")
+        return stored.get("viewer_url")
+
+    try:
+        return await asyncio.wait_for(build(), CART_PREVIEW_WAIT_S)
+    except Exception as exc:  # the cart and checkout matter more than the preview
+        ctx.logger.warning(f"job={state.get('job_id')} cart preview skipped: {exc!r}")
+        return None
 
 
 # ASI:One's payment notice (CommitPayment) and the user's "I've paid" tap can arrive together. Two

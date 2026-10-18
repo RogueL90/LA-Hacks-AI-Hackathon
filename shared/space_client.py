@@ -36,6 +36,16 @@ async def get_space(space_id: str) -> Space:
         return Space.model_validate(r.json())
 
 
+async def get_overlays(space_id: str, overlay_set_id: str) -> list[Overlay]:
+    """The overlays of a stored overlay set (empty without the service)."""
+    if not SPACE_SERVICE_URL or not overlay_set_id or space_id == DEMO_SPACE_ID:
+        return []
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(f"{SPACE_SERVICE_URL}/spaces/{space_id}/overlays/{overlay_set_id}")
+        r.raise_for_status()
+    return [Overlay(**o) for o in r.json().get("overlays", [])]
+
+
 async def post_overlays(space_id: str, mode: str, overlays: list[Overlay], job_id: str = "") -> dict:
     """Store overlays for the viewer. Returns {"overlay_set_id", "viewer_url", "snapshot_url"} (empty without the service)."""
     if not SPACE_SERVICE_URL or space_id == DEMO_SPACE_ID:
